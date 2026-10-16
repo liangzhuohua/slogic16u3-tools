@@ -563,4 +563,70 @@ ZH: dict[str, str] = {
         'cable-index {cable} 有应答但器件不符：读到 {got:#010x}，应为 {exp:#010x}——尝试下一根线缆',
     'cable-index {cable} answered but reported no IDCODE to compare; using it':
         'cable-index {cable} 有应答但未报告可比对的 IDCODE；使用它',
+
+    # ---- stations: JTAG flashing / production test (v1.0) ------------------
+    'Recognised automatically from the board':
+        '由被测板自动识别',
+    'Arm the station: each newly connected board is recognised and run automatically':
+        '布防：每接入一块被测板即自动识别并执行',
+    'Station steps (automatic when armed; ▶ runs one step)':
+        '工位步骤（布防后自动执行；▶ 单步执行）',
+    'Standby — choose the station and click Start':
+        '待机 — 选择工位后点"开始"',
+    'Waiting for the board under test…':
+        '等待被测板接入…',
+    'Board removed; waiting for the next board…':
+        '被测板已取下，等待下一块…',
+    'Waiting for the next board…':
+        '等待下一块被测板…',
+    'Station:':
+        '工位:',
+    'Start':
+        '开始',
+    'No analyzer detected':
+        '未检测到分析仪',
+    'programmer.toml with flash + idcode':
+        '含 flash 与 idcode 的 programmer.toml',
+    'Disarmed':
+        '已撤防',
+    'JTAG: no board detected':
+        'JTAG：未检测到被测板',
+    'Remove the board under test':
+        '请取下被测板',
+    'Connect a board first (click Start to recognise it)':
+        '请先接入被测板（点"开始"自动识别）',
+    'Station: {s}':
+        '工位: {s}',
+    '{n} analyzers online; keep only the board under test connected':
+        '在线 {n} 台分析仪；请只保留被测板一台',
+    'Armed: {station}':
+        '已布防：{station}',
+    '{station}: {name}':
+        '{station}：{name}',
+    'JTAG: unknown device (IDCODE {code:#010x}); not a configured product':
+        'JTAG：未知器件（IDCODE {code:#010x}），不是已配置的产品',
+    'JTAG: {name} (IDCODE {code:#010x}, via {via})':
+        'JTAG：{name}（IDCODE {code:#010x}，经 {via}）',
+    'USB link':
+        'USB 链路',
+    'Unknown station: {s}':
+        '未知工位：{s}',
+    'USB link {got} (needs {need}): OK':
+        'USB 链路 {got}（要求 {need}）：合格',
+    'No {name} running its app firmware was found':
+        '未找到运行应用固件的 {name}',
+    'link too slow: {got}, needs {need} (check the cable and the host port)':
+        '链路不合格：{got}，要求 {need}（检查线缆与主机接口）',
+    '{name} is in DFU mode: the app firmware has not been flashed':
+        '{name} 处于 DFU 模式：应用固件尚未烧录',
+    'unknown link {name!r} (expected one of {opts})':
+        '未知链路 {name!r}（应为 {opts} 之一）',
+    'JTAG flashing':
+        'JTAG 烧录',
+    'Production test':
+        '产测',
+    'Fixture · flash signal generator':
+        '夹具 · 烧录信号发生器',
+    'Check USB link':
+        '检查 USB 链路',
 }

@@ -1,20 +1,24 @@
-"""SLogic production-test station GUI (multi-product, profile-driven).
+"""SLogic production station GUI (multi-product, profile-driven).
 
-Test-executive paradigm:
+Production is split into stations; this program runs two of them, chosen in
+the header (the choice is remembered):
 
-- The LEFT side is a single linear TEST SEQUENCE list built from the
-  product profile -- the same steps drive both modes: START runs them all
-  in order (automated), and every row has its own run button (manual,
-  step-by-step).  Each row live-updates status (pending/running/waiting/
-  pass/fail) and duration.
-- The RIGHT side stacks two always-visible panes (no tabs): the result
-  report on top and the live run log on bottom (like the old two-window
-  layout).  Custom capture parameters (for engineering debug) live behind
-  a ⚙ gear on the sampling step; the language selector sits in the header,
-  and resource-path overrides + one-time environment setup sit under the
-  left-panel auxiliary section.
-- The BOTTOM is a full-width state banner: standby / running / waiting
-  (operator prompts) / PASS / FAIL + failure summary.
+- JTAG flashing: a blank board on the JTAG programmer gets its eFuse AES key
+  and the DFU base image.  The product is recognised from the JTAG IDCODE.
+- Production test: a board running its app firmware is checked for its USB
+  link (32U3 needs 10G) and then pattern/capture tested.  One board at a time:
+  sigrok-cli cannot choose between several analyzers.
+
+(App-firmware OTA happens between the two, in a separate batch web tool.)
+
+START arms the station: every newly connected board is recognised and run
+automatically; the verdict stays on the banner until the next board arrives.
+STOP disarms (and cancels a run).  While disarmed, each step row's ▶ runs that
+step alone on the last recognised board.
+
+- The LEFT side is the station's linear step list (live status + duration).
+- The RIGHT side stacks the result report (top) and the live run log (bottom).
+- The BOTTOM is a full-width state banner.
 
 All product specifics come from resources/products/*.toml.
 
@@ -27,13 +31,11 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from collections import Counter
-from pathlib import Path
 
 from PyQt5.QtCore import QModelIndex, QSettings, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
@@ -45,7 +47,7 @@ from . import pipeline as pipeline_mod
 from . import programmer
 from .device_watch import Mode
 from .i18n import LANGS, get_language, set_language, t
-from .pipeline import StepStatus, sequence_plan
+from .pipeline import STATION_LABELS, STATIONS, StepStatus, sequence_plan
 from .profiles import (
     OUTPUT_DIR, ProductProfile, check_resources, format_rate,
     load_profiles, parse_rate,
@@ -161,7 +163,7 @@ class ProductionTestGUI(QWidget):
     prompt_clear_signal = pyqtSignal()
     manual_switch_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
-    probe_signal = pyqtSignal(object)
+    detect_signal = pyqtSignal(object)   # programmer.Detected | None
     env_signal = pyqtSignal(bool, str)   # (ok, action)  action in {deploy,remove}
 
     def __init__(self):
@@ -179,13 +181,16 @@ class ProductionTestGUI(QWidget):
         self._prompt_flash_on = True
         self._prompt_timer = QTimer(self)
         self._prompt_timer.timeout.connect(self._flash_prompt_banner)
-        # external JTAG programmer state, driven by the manual 🔄 scan button
-        # (None = not scanned yet); separate from USB DFU/APP auto-scan.
-        self.programmer_present: bool | None = None
-        self.efuse_status = "unknown"       # unknown | unlocked | locked
-        self.probe_cable: int | None = None
-        self._rescan_after = False          # auto re-probe after a lock succeeds
         self._switch_popup: QMessageBox | None = None  # manual-switch popup (non-modal)
+        saved = QSettings().value("station", "test")
+        self.station = saved if saved in STATIONS else "test"
+        self._profile: ProductProfile | None = None   # last recognised board's product
+        self._board_cable: int | None = None          # JTAG cable index of that board
+        # arming: idle -> wait_insert -> running -> wait_remove -> wait_insert ...
+        self.armed = False
+        self.arm_state = "idle"
+        self._detect_busy = False
+        self._last_detect = None                      # programmer.Detected | None
 
         self.init_ui()
         # Signals connect ONCE here to stable forwarding slots; a language
@@ -198,7 +203,7 @@ class ProductionTestGUI(QWidget):
         self.prompt_clear_signal.connect(self._on_prompt_clear)
         self.manual_switch_signal.connect(self._on_manual_switch)
         self.finished_signal.connect(self._on_finished)
-        self.probe_signal.connect(self._on_probe)
+        self.detect_signal.connect(self._on_detect)
         self.env_signal.connect(self._on_env_done)
         self._refresh_env_buttons()
 
@@ -210,6 +215,11 @@ class ProductionTestGUI(QWidget):
         self.device_timer = QTimer(self)
         self.device_timer.timeout.connect(self.refresh_device_status)
         self.device_timer.start(1500)
+        # JTAG station: read-only IDCODE poll while armed (a background thread;
+        # programmer_cli takes ~1 s per try).
+        self.jtag_timer = QTimer(self)
+        self.jtag_timer.timeout.connect(self._jtag_poll)
+        self.jtag_timer.start(2500)
         self.refresh_device_status()
 
     # ------------------------------------------------------------------ UI
@@ -223,7 +233,7 @@ class ProductionTestGUI(QWidget):
         self.setLayout(self._outer)
         self._central = self._build_central()
         self._outer.addWidget(self._central)
-        self._on_product_changed(self.product_combo.currentIndex())
+        self._set_profile(None)
 
     def _build_central(self) -> QWidget:
         central = QWidget()
@@ -243,11 +253,7 @@ class ProductionTestGUI(QWidget):
 
     def _rebuild_ui(self):
         """Tear down and rebuild the central widget in the current language,
-        preserving operator-visible state (product, overrides, log, report)."""
-        prod_idx = self.product_combo.currentIndex()
-        fw = self.fw_file_edit.text()
-        dfu = self.dfu_file_edit.text()
-        ekey = self.ekey_file_edit.text()
+        preserving operator-visible state (station, board, log, report)."""
         log_text = self.log_box.toPlainText()
         report_text = self.report_box.toPlainText()
 
@@ -258,19 +264,11 @@ class ProductionTestGUI(QWidget):
         self._central = self._build_central()
         self._outer.addWidget(self._central)
 
-        # restore state (block signals so restoring the product index doesn't
-        # fire _on_product_changed before we invoke it explicitly below)
-        self.product_combo.blockSignals(True)
-        self.product_combo.setCurrentIndex(prod_idx)
-        self.product_combo.blockSignals(False)
-        self.fw_file_edit.setText(fw)
-        self.dfu_file_edit.setText(dfu)
-        self.ekey_file_edit.setText(ekey)
         if log_text:
             self.log_box.setPlainText(log_text)
         if report_text:
             self.report_box.setPlainText(report_text)
-        self._on_product_changed(prod_idx)
+        self._set_profile(self._profile)
         self.refresh_device_status()
         self._refresh_env_buttons()
         self._render_problem_chip()
@@ -279,20 +277,18 @@ class ProductionTestGUI(QWidget):
     def _build_header(self) -> QHBoxLayout:
         h = QHBoxLayout()
         h.setSpacing(8)
-        self.scan_btn = QPushButton("🔄")
-        self.scan_btn.setToolTip(
-            t("Scan the external programmer (JTAG) and read the eFuse lock "
-              "state. The Tang Nano 9K fixture must be UNPLUGGED (it shares "
-              "the FTDI ID with the programmer)."))
-        self.scan_btn.setFixedWidth(36)
-        self.scan_btn.clicked.connect(self.run_probe)
-        h.addWidget(self.scan_btn)
+        h.addWidget(QLabel(t("Station:")))
+        self.station_combo = QComboBox()
+        for st in STATIONS:
+            self.station_combo.addItem(t(STATION_LABELS[st]), st)
+        self.station_combo.setCurrentIndex(STATIONS.index(self.station))
+        self.station_combo.currentIndexChanged.connect(self._on_station_changed)
+        h.addWidget(self.station_combo)
         h.addWidget(QLabel(t("Product:")))
-        self.product_combo = QComboBox()
-        for p in self.profiles:
-            self.product_combo.addItem(p.display_name, p.id)
-        self.product_combo.currentIndexChanged.connect(self._on_product_changed)
-        h.addWidget(self.product_combo)
+        self.product_label = QLabel("—")
+        self.product_label.setStyleSheet(f"color:{ACCENT}; font-weight:bold;")
+        self.product_label.setToolTip(t("Recognised automatically from the board"))
+        h.addWidget(self.product_label)
 
         self.device_status_label = QLabel("…")
         f = QFont(); f.setBold(True)
@@ -318,26 +314,29 @@ class ProductionTestGUI(QWidget):
         h.addWidget(self.warn_chip)
         self._render_problem_chip()
 
-        self.start_btn = QPushButton("▶ " + t("Run Full Test"))
+        self.start_btn = QPushButton("▶ " + t("Start"))
         f2 = QFont(); f2.setPointSize(f2.pointSize() + 1); f2.setBold(True)
         self.start_btn.setFont(f2)
         self.start_btn.setStyleSheet(
             f"QPushButton {{ background:{ACCENT}; color:white; padding:5px 18px;"
             f" border-radius:4px; }} QPushButton:disabled {{ background:#b8b8b8; }}")
-        self.start_btn.clicked.connect(self.run_full_test)
+        self.start_btn.setToolTip(
+            t("Arm the station: each newly connected board is recognised and run "
+              "automatically"))
+        self.start_btn.clicked.connect(self.arm)
         h.addWidget(self.start_btn)
 
         self.stop_btn = QPushButton("■ " + t("Stop"))
         self.stop_btn.setStyleSheet(
             "QPushButton { background:#c62828; color:white; padding:5px 12px;"
             " border-radius:4px; } QPushButton:disabled { background:#b8b8b8; }")
-        self.stop_btn.clicked.connect(self.cancel_pipeline)
+        self.stop_btn.clicked.connect(self.disarm)
         self.stop_btn.setEnabled(False)
         h.addWidget(self.stop_btn)
         return h
 
     def _build_sequence_panel(self) -> QWidget:
-        panel = QGroupBox(t("Test Sequence (auto in order, or ▶ per step)"))
+        panel = QGroupBox(t("Station steps (automatic when armed; ▶ runs one step)"))
         panel.setStyleSheet(
             f"QGroupBox {{ border:1px solid #bbb; border-radius:4px; margin-top:10px;"
             f" font-weight:bold; }} QGroupBox::title {{ subcontrol-origin:margin;"
@@ -354,16 +353,6 @@ class ProductionTestGUI(QWidget):
         scroll.setWidget(holder)
         outer.addWidget(scroll, 1)
 
-        aux_head = QLabel(t("Auxiliary (not counted in sequence result)"))
-        aux_head.setStyleSheet("color:#666; font-weight:bold; margin-top:4px;")
-        outer.addWidget(aux_head)
-        self.aux_layout = QHBoxLayout()
-        self.aux_layout.setSpacing(4)
-        outer.addLayout(self.aux_layout)
-
-        # resource-path overrides + one-time environment setup live under the
-        # auxiliary section (moved out of the old config tab).
-        outer.addWidget(self._build_resource_group())
         env_box = self._build_env_group()
         if env_box is not None:
             outer.addWidget(env_box)
@@ -407,24 +396,6 @@ class ProductionTestGUI(QWidget):
         split.setStretchFactor(0, 2)   # report
         split.setStretchFactor(1, 3)   # log gets a bit more room
         return split
-
-    def _build_resource_group(self) -> QGroupBox:
-        """资源路径覆盖：显示产品档案解析出的路径（placeholder），可临时改用别的
-        文件（仅本次会话生效，不写回 TOML）。三项：app 固件 / DFU 镜像 / eFuse 密钥。"""
-        res_box = QGroupBox(
-            t("Resource Path Overrides (blank = use profile; this session only)"))
-        res_grid = QGridLayout()
-        res_grid.setContentsMargins(6, 4, 6, 4)
-        res_grid.setVerticalSpacing(3)
-        self.fw_file_edit = self._add_resource_row(
-            res_grid, 0, t("app firmware:"), self.select_fw_file)
-        self.dfu_file_edit = self._add_resource_row(
-            res_grid, 1, t("DFU image:"), self.select_dfu_file)
-        self.ekey_file_edit = self._add_resource_row(
-            res_grid, 2, t("eFuse key:"), self.select_ekey_file)
-        res_grid.setColumnStretch(1, 1)
-        res_box.setLayout(res_grid)
-        return res_box
 
     def _build_env_group(self) -> QGroupBox | None:
         """环境准备（一次性）：本平台的先决条件一键部署/移除——Linux=udev 设备权限；
@@ -513,7 +484,7 @@ class ProductionTestGUI(QWidget):
         self.banner.setFont(bf)
         self.banner.setAlignment(Qt.AlignCenter)
         self.banner.setFixedHeight(52)
-        self._set_banner("idle", t("Standby — select a product and connect the device"))
+        self._set_banner("idle", t("Standby — choose the station and click Start"))
         return self.banner
 
     def _set_banner(self, kind: str, text: str):
@@ -561,23 +532,20 @@ class ProductionTestGUI(QWidget):
 
     @property
     def profile(self) -> ProductProfile | None:
-        pid = self.product_combo.currentData()
-        for p in self.profiles:
-            if p.id == pid:
-                return p
-        return None
+        """Product of the board last recognised at this station (None before
+        the first board).  Chosen by the hardware, never by the operator."""
+        return self._profile
 
-    def _on_product_changed(self, _idx):
-        p = self.profile
+    def _set_profile(self, p: ProductProfile | None):
+        self._profile = p
+        self.product_label.setText(p.display_name if p else "—")
+        # before any board is recognised, show the station's steps for the
+        # first product (step ids are the same per station, labels close)
+        shown = p or (self.profiles[0] if self.profiles else None)
+        if shown is not None:
+            self._rebuild_sequence(shown)
         if p is None:
             return
-        # a different product means a different chip/cable -- the last scan's
-        # programmer/eFuse verdict no longer applies, so clear it.
-        self.programmer_present = None
-        self.efuse_status = "unknown"
-        self.probe_cable = None
-        self._rebuild_sequence(p)
-        self._rebuild_aux(p)
         self.channel_combo.blockSignals(True)
         self.channel_combo.clear()
         self.channel_combo.addItems([str(c) for c in p.channel_options])
@@ -585,23 +553,28 @@ class ProductionTestGUI(QWidget):
         self.channel_combo.blockSignals(False)
         self.samples_edit.setText(p.default_samples)
         self.volt_edit.setText(f"{p.voltage_threshold_v:g}")
-        # 资源路径覆盖：清空覆盖、placeholder 显示档案解析出的当前路径
-        prog = p.programmer
-        dfu_img = prog.flash.image if (prog and prog.flash) else None
-        ekey = prog.efuse_key_file if prog else None
-        for edit, path, empty_hint in (
-                (self.fw_file_edit, p.app_firmware,
-                 t("Profile has no firmware; please select manually")),
-                (self.dfu_file_edit, dfu_img, t("Profile has no DFU image")),
-                (self.ekey_file_edit, ekey, t("Profile has no eFuse key"))):
-            edit.setText("")
-            edit.setPlaceholderText(str(path) if path else empty_hint)
         self._on_channels_changed(self.channel_combo.currentText())
-        # profile-declared default rate for the default channel count
         default_rate = format_rate(p.default_samplerate_hz)
         if self.rate_combo.findText(default_rate) >= 0:
             self.rate_combo.setCurrentText(default_rate)
-        self.refresh_device_status()   # status text is per selected product
+
+    def _on_station_changed(self, _idx):
+        st = self.station_combo.currentData()
+        if st is None or st == self.station:
+            return
+        if self.armed or (self.pipeline is not None and self.pipeline.running):
+            self.station_combo.blockSignals(True)
+            self.station_combo.setCurrentIndex(STATIONS.index(self.station))
+            self.station_combo.blockSignals(False)
+            return
+        self.station = st
+        QSettings().setValue("station", st)
+        self._board_cable = None
+        self._last_detect = None
+        self._set_profile(None)
+        self.report_box.clear()
+        self._set_banner("idle", t("Standby — choose the station and click Start"))
+        self.refresh_device_status()
 
     def _rebuild_sequence(self, p: ProductProfile):
         while self.seq_container.count():
@@ -609,7 +582,7 @@ class ProductionTestGUI(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         self.step_rows.clear()
-        plan = sequence_plan(p)
+        plan = sequence_plan(p, self.station)
         if not plan:
             self.seq_container.addWidget(QLabel(t("Profile defines no steps")))
         has_fixture = p.signal_source.is_fpga
@@ -633,35 +606,6 @@ class ProductionTestGUI(QWidget):
             return "🖐 " + t("Requires Tang Nano 9K unplugged")
         return ""
 
-    def _rebuild_aux(self, p: ProductProfile):
-        while self.aux_layout.count():
-            item = self.aux_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        # 需外置 JTAG 烧录器的辅助按钮（由 _update_enablement 按 programmer_present
-        # 门控）。注：eFuse 写锁不再是独立按钮——它是烧空板的前置步骤（加密 DFU
-        # 须先写入 AES 密钥才能启动），由 blank:efuse 步骤自动完成；锁定状态显示
-        # 在设备状态栏前缀（refresh_device_status）。
-        self.programmer_aux_buttons: list[QPushButton] = []
-        # DFU<->APP 手动切换：文案与方向按当前设备模式在 _update_switch_btn 中更新；
-        # 启用状态另行管理（需检测到设备才可用）。
-        self.switch_btn = QPushButton("🔀 DFU ↔ APP " + t("Switch"))
-        self.switch_btn.clicked.connect(self.run_switch_mode)
-        self.aux_layout.addWidget(self.switch_btn)
-        self.reflash_btn = QPushButton("♻ " + t("Reflash (repair)"))
-        self.reflash_btn.setToolTip(
-            t("Wait for DFU mode (prompt manual action on timeout) → "
-              "rewrite app firmware → wait for app mode"))
-        self.reflash_btn.clicked.connect(self.run_reflash)
-        self.aux_layout.addWidget(self.reflash_btn)
-        self.aux_layout.addStretch(1)
-
-    def _efuse_badge(self) -> str:
-        """eFuse lock badge (shown before the device status): unknown/unlocked/locked."""
-        return {"locked": "🔒" + t("eFuse locked"),
-                "unlocked": "🔓" + t("eFuse unlocked")}.get(
-            self.efuse_status, "⚪" + t("eFuse unknown"))
-
     def _on_channels_changed(self, text: str):
         p = self.profile
         if p is None or not text:
@@ -683,9 +627,8 @@ class ProductionTestGUI(QWidget):
     # --------------------------------------------------------- device status
 
     def refresh_device_status(self):
-        """Status is about the SELECTED product; other attached SLogic
-        devices are only a secondary hint (they also block sigrok capture
-        until the driver supports device selection)."""
+        """Poll the USB analyzers.  At the test station this also drives the
+        armed state machine (a new board starts a run, its removal re-arms)."""
         if not device_watch.backend_ok():
             # 无 libusb 后端时所有 usb.core.find 静默失败 -> 看不到任何设备；
             # 显式告警而非静默（典型：Windows 未装 libusb-1.0.dll）
@@ -698,175 +641,161 @@ class ProductionTestGUI(QWidget):
             self._update_enablement()
             return
         self.detected = device_watch.scan_devices(self.profiles)
-        p = self.profile
-        conflict = self._conflicting_app_device(p)
-        if conflict is not None:
-            # 产品与在线设备不符：只提示切换到正确产品，其它操作在 _update_enablement 中禁用
-            self.device_status_label.setText(
-                "⚠ " + t("Online {conflict} differs from selected {name}: switch to "
-                         "the correct product, or plug in the matching device").format(
-                             conflict=conflict, name=p.display_name))
-            self.device_status_label.setStyleSheet("color:#c62828;")
-            self._update_enablement()
-            return
-        mine = next((d for d in self.detected
-                     if p is not None and d.profile.id == p.id), None)
-        # dfu_pid is per-product now (16U3=0x30F1, 32U3=0x30F2), so a DFU
-        # device usually resolves to one profile; only if several products
-        # still share a dfu_pid is it ambiguous -- then name it "SLogic DFU"
-        shared_dfu = {k for k, n in Counter(
-            (q.vid, q.dfu_pid) for q in self.profiles
-            if q.dfu_pid is not None).items() if n > 1}
-        mine_key = (mine.profile.vid, mine.pid) if mine else None
-        others, seen = [], set()
-        for d in self.detected:
-            key = (d.profile.vid, d.pid)
-            if (p is not None and d.profile.id == p.id) or key == mine_key or key in seen:
-                continue
-            seen.add(key)
-            others.append("SLogic DFU" if key in shared_dfu else str(d))
-        others_txt = ("　(" + t("also online: {items}").format(items=", ".join(others)) + ")"
-                      if others else "")
-        badge = self._efuse_badge()   # eFuse 状态（来自 🔄 扫描）前置显示
-        if mine is not None:
-            self.device_status_label.setText(
-                f"{badge} | " + t("Device: {dev}").format(dev=mine) + others_txt)
-            self.device_status_label.setStyleSheet("color: #2e7d32;")
-        else:
-            name = p.display_name if p else "SLogic"
-            self.device_status_label.setText(
-                f"{badge} | " + t("No {name} device detected").format(name=name) + others_txt)
-            self.device_status_label.setStyleSheet("color: #c62828;")
+        if self.station == "test":
+            self._show_test_status()
+            self._test_arm_tick()
         self._update_enablement()
 
-    def _detected_mode(self, p: ProductProfile) -> Mode | None:
-        for d in self.detected:
-            if d.profile.id == p.id:
-                return d.mode
-        return None
+    def _show_test_status(self):
+        if not self.detected:
+            self._status(t("No analyzer detected"), "#c62828")
+            return
+        text = ", ".join(str(d) for d in self.detected)
+        ok = (len(self.detected) == 1 and self.detected[0].mode == Mode.APP
+              and (self.detected[0].profile.min_link or 0) <= (self.detected[0].speed or 0))
+        self._status(t("Device: {dev}").format(dev=text), "#2e7d32" if ok else "#b26a00")
 
-    def _conflicting_app_device(self, p: ProductProfile | None):
-        """在线的、属于其它产品的 APP 模式设备。APP 的 PID 各产品唯一，故能明确
-        判定"插错产品"；DFU 的 PID 各产品共用、无法区分，永远不算冲突。"""
-        if p is None:
-            return None
-        for d in self.detected:
-            if d.mode == Mode.APP and d.profile.id != p.id:
-                return d
-        return None
+    def _status(self, text: str, color: str):
+        self.device_status_label.setText(text)
+        self.device_status_label.setStyleSheet(f"color:{color};")
+
+    def _station_missing(self) -> list[str]:
+        """What this station still lacks before it can be armed."""
+        if self.station == "test":
+            return [] if self.sigrok is not None else ["sigrok-cli"]
+        ok = any(p.programmer is not None and p.programmer.flash is not None
+                 and p.programmer.idcode is not None for p in self.profiles)
+        return [] if ok else [t("programmer.toml with flash + idcode")]
 
     def _update_enablement(self):
-        p = self.profile
         busy = self.pipeline is not None and self.pipeline.running
-        self.stop_btn.setEnabled(busy)
-        self.product_combo.setEnabled(not busy)   # 产品选择始终可用，以便纠正不符
-        if p is None:
-            self.start_btn.setEnabled(False)
-            self.sampling_btn.setEnabled(False)
-            return
-        conflict = None if busy else self._conflicting_app_device(p)
-        if conflict is not None:
-            # 产品与在线设备不符：禁用一切操作，只允许（顶栏）切换到正确产品
-            self.start_btn.setEnabled(False)
-            self.start_btn.setToolTip(
-                t("Online device is {online} (APP), differs from selected {sel} — "
-                  "switch to the correct product or replug").format(
-                      online=conflict.profile.display_name, sel=p.display_name))
-            self.sampling_btn.setEnabled(False)
-            for row in self.step_rows.values():
-                row.run_btn.setEnabled(False)
-            for btn in getattr(self, "programmer_aux_buttons", []):
-                btn.setEnabled(False)
-            if hasattr(self, "reflash_btn"):
-                self.reflash_btn.setEnabled(False)
-            self._update_switch_btn(p, allow=False)
-            return
-        fw_ok = (p.app_firmware is not None and p.app_firmware.is_file()) \
-            or bool(self.fw_file_edit.text().strip())
-        # USB auto-scan drives DFU/APP presence; the manual 🔄 scan drives the
-        # external programmer state. Steps are gated by their real precondition.
-        mode = self._detected_mode(p)
-        dfu_present = mode == Mode.DFU
-        app_present = mode == Mode.APP
-        prog_ok = self.programmer_present is True
-        has_blank = p.programmer is not None and p.programmer.flash is not None
-        seq_ready = (self.sigrok is not None and p.dfu_pid is not None
-                     and fw_ok and (not has_blank or prog_ok))
-        self.start_btn.setEnabled(not busy and seq_ready)
-        if not seq_ready:
-            missing = []
-            if self.sigrok is None: missing.append("sigrok-cli")
-            if p.dfu_pid is None: missing.append("dfu_pid")
-            if not fw_ok: missing.append(t("app firmware"))
-            if has_blank and not prog_ok:
-                missing.append(t("external programmer (click 🔄 scan)"))
-            self.start_btn.setToolTip(t("Missing: {items}").format(items=", ".join(missing)))
-        else:
-            self.start_btn.setToolTip("")
-        for sid, row in self.step_rows.items():
-            tip = ""
-            if sid.startswith("blank:"):
-                ok = prog_ok
-                if not ok:
-                    tip = t("Connect the external programmer: click 🔄 scan in the top bar")
-            elif sid == "flash_app":
-                ok = p.dfu_pid is not None and fw_ok and dfu_present
-                if not dfu_present:
-                    tip = t("Device must be in DFU mode (complete the previous "
-                            "blank-flash step first)")
-            elif sid == "switch_app":
-                ok = p.dfu_pid is not None and dfu_present
-                if not dfu_present:
-                    tip = t("Device must be in DFU mode")
-            elif sid == "wait_dfu":
-                ok = p.dfu_pid is not None
-            elif sid == "wait_app":
-                ok = True
-            elif sid.startswith("capture"):
-                ok = self.sigrok is not None and app_present
-                if self.sigrok is not None and not app_present:
-                    tip = t("Device must be in APP mode (finish flashing APP and "
-                            "waiting for APP first)")
-            else:
-                ok = True
-            row.run_btn.setEnabled(not busy and ok)
-            row.run_btn.setToolTip(tip if not ok else "")
-        prog_tip = (t("Production final-check operation; proceed with caution") if prog_ok
-                    else t("Connect the external programmer: click 🔄 scan in the top bar"))
-        for btn in getattr(self, "programmer_aux_buttons", []):
-            btn.setEnabled(not busy and prog_ok)
-            btn.setToolTip(prog_tip)
-        if hasattr(self, "reflash_btn"):
-            self.reflash_btn.setEnabled(not busy and p.dfu_pid is not None and fw_ok)
+        idle = not busy and not self.armed
+        missing = self._station_missing()
+        self.station_combo.setEnabled(idle)
+        self.start_btn.setEnabled(idle and not missing)
+        self.start_btn.setToolTip(
+            t("Missing: {items}").format(items=", ".join(missing)) if missing else
+            t("Arm the station: each newly connected board is recognised and run "
+              "automatically"))
+        self.stop_btn.setEnabled(busy or self.armed)
+        p = self.profile
+        for row in self.step_rows.values():
+            row.run_btn.setEnabled(idle and p is not None and not missing)
+            row.run_btn.setToolTip("" if p is not None else
+                                   t("Connect a board first (click Start to recognise it)"))
         self.sampling_btn.setEnabled(
-            not busy and self.sigrok is not None
-            and self._detected_mode(p) == Mode.APP)
-        self._update_switch_btn(p, allow=not busy)
+            idle and self.station == "test" and self.sigrok is not None
+            and p is not None
+            and any(d.profile.id == p.id and d.mode == Mode.APP for d in self.detected))
 
-    def _update_switch_btn(self, p: ProductProfile | None, *, allow: bool):
-        """按当前设备模式设置 DFU<->APP 切换按钮的文案、方向提示与启用状态。"""
-        if not hasattr(self, "switch_btn"):
+    # ------------------------------------------------------------ arming
+
+    def arm(self):
+        if self.armed or self._station_missing():
             return
-        if p is None or p.dfu_pid is None:
-            self.switch_btn.setText("🔀 DFU ↔ APP " + t("Switch"))
-            self.switch_btn.setToolTip(t("This product has no DFU (dfu_pid); cannot switch"))
-            self.switch_btn.setEnabled(False)
-            return
-        mode = self._detected_mode(p)
-        if mode == Mode.DFU:
-            self.switch_btn.setText("🔀 DFU → APP")
-            self.switch_btn.setToolTip(
-                t("Currently DFU (flashing) mode; switch to APP (application) mode"))
-            self.switch_btn.setEnabled(allow)
-        elif mode == Mode.APP:
-            self.switch_btn.setText("🔀 APP → DFU")
-            self.switch_btn.setToolTip(
-                t("Currently APP (application) mode; switch to DFU (flashing) mode"))
-            self.switch_btn.setEnabled(allow)
+        self.armed = True
+        self.arm_state = "wait_insert"
+        self.log_signal.emit("===== " + t("Armed: {station}").format(
+            station=t(STATION_LABELS[self.station])) + " =====")
+        self._set_banner("waiting", t("Waiting for the board under test…"))
+        self._update_enablement()
+        if self.station == "jtag":
+            self._jtag_poll()
         else:
-            self.switch_btn.setText("🔀 DFU ↔ APP " + t("Switch"))
-            self.switch_btn.setToolTip(t("No device detected; cannot switch"))
-            self.switch_btn.setEnabled(False)
+            self.refresh_device_status()
+
+    def disarm(self):
+        was_running = self.pipeline is not None and self.pipeline.running
+        if was_running:
+            self.cancel_pipeline()
+        if self.armed:
+            self.log_signal.emit(t("Disarmed"))
+        self.armed = False
+        self.arm_state = "idle"
+        if not was_running:
+            self._set_banner("idle", t("Standby — choose the station and click Start"))
+        self._update_enablement()
+
+    def _run_board(self, p: ProductProfile, cable: int | None):
+        """A new board was recognised while armed: run the whole station."""
+        self._set_profile(p)
+        self._board_cable = cable
+        self.arm_state = "running"
+        self.log_signal.emit("===== " + t("{station}: {name}").format(
+            station=t(STATION_LABELS[self.station]), name=p.display_name) + " =====")
+        self._start(pipeline_mod.Pipeline.for_station(
+            p, self.station, self.sigrok, self._callbacks(),
+            cable_index=cable, all_profiles=self.profiles), reset_rows=True)
+
+    def _board_removed(self):
+        self.arm_state = "wait_insert"
+        self.log_signal.emit(t("Board removed; waiting for the next board…"))
+        self.step_label.setText(t("Waiting for the next board…"))
+
+    def _test_arm_tick(self):
+        if not self.armed or (self.pipeline is not None and self.pipeline.running):
+            return
+        present = self.detected
+        if self.arm_state == "wait_remove":
+            if not present:
+                self._board_removed()
+            return
+        if self.arm_state != "wait_insert" or not present:
+            return
+        if len(present) > 1:
+            # sigrok-cli would capture from any of them; never guess
+            self._set_banner("waiting", t("{n} analyzers online; keep only the board "
+                                          "under test connected").format(n=len(present)))
+            return
+        self._run_board(present[0].profile, None)
+
+    def _jtag_poll(self):
+        if (self.station != "jtag" or not self.armed or self._detect_busy
+                or (self.pipeline is not None and self.pipeline.running)):
+            return
+        self._detect_busy = True
+        profiles = self.profiles
+
+        def worker():
+            try:
+                res = programmer.detect_product(profiles)
+            except Exception as e:                          # noqa: BLE001
+                self.log_signal.emit("[jtag] " + t("exception: {e}").format(e=e))
+                res = None
+            self.detect_signal.emit(res)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_detect(self, res):
+        self._detect_busy = False
+        if self.station != "jtag":
+            return
+        prev = self._last_detect
+        self._last_detect = res
+        if res is None:
+            self._status(t("JTAG: no board detected"), "#c62828")
+        elif res.profile is None:
+            self._status(t("JTAG: unknown device (IDCODE {code:#010x}); not a configured "
+                           "product").format(code=res.idcode), "#c62828")
+        else:
+            self._status(t("JTAG: {name} (IDCODE {code:#010x}, via {via})").format(
+                name=res.profile.display_name, code=res.idcode, via=res.via), "#2e7d32")
+        changed = (prev is None) != (res is None) or (
+            prev is not None and res is not None and prev.idcode != res.idcode)
+        if changed and res is not None:
+            self.log_signal.emit("[jtag] " + self.device_status_label.text())
+        if not self.armed:
+            return
+        if self.arm_state == "wait_remove":
+            if res is None:
+                self._board_removed()
+            return
+        if self.arm_state != "wait_insert" or res is None:
+            return
+        if res.profile is None:
+            self._set_banner("waiting", self.device_status_label.text())
+            return
+        self._run_board(res.profile, res.cable)
 
     # -------------------------------------------------------------- actions
 
@@ -884,8 +813,6 @@ class ProductionTestGUI(QWidget):
             return
         self.pipeline = pl
         self._session_t0 = time.time()
-        # 本次运行含 eFuse 写锁步骤：成功后自动复扫，让 eFuse 徽标翻成 🔒
-        self._rescan_after = any(s.id == "blank:efuse" for s in pl.steps)
         if reset_rows:
             for row in self.step_rows.values():
                 row.reset()
@@ -897,39 +824,6 @@ class ProductionTestGUI(QWidget):
         pl.start()
         self._update_enablement()
 
-    def _override_firmware(self) -> Path | None:
-        override = self.fw_file_edit.text().strip()
-        return Path(override) if override else None
-
-    def _override_dfu(self) -> Path | None:
-        override = self.dfu_file_edit.text().strip()
-        return Path(override) if override else None
-
-    def _override_efuse(self) -> Path | None:
-        override = self.ekey_file_edit.text().strip()
-        return Path(override) if override else None
-
-    def run_full_test(self):
-        p = self.profile
-        if p is None or self.sigrok is None:
-            return
-        if p.signal_source.is_fpga:
-            r = QMessageBox.information(
-                self, t("Full test setup"),
-                t("Steps 1-6 run with the Tang Nano 9K UNPLUGGED.\n"
-                  "Step 7 asks you to PLUG IN the Tang Nano 9K.\n\n"
-                  "Click OK to start."),
-                QMessageBox.Ok | QMessageBox.Cancel)
-            if r != QMessageBox.Ok:
-                return
-        self.log_signal.emit(
-            "===== " + t("Run Full Test: {name}").format(name=p.display_name) + " =====")
-        self._start(pipeline_mod.Pipeline.full_test(
-            p, self.sigrok, self._callbacks(), self._override_firmware(),
-            cable_index=self.probe_cable, image_override=self._override_dfu(),
-            efuse_key_override=self._override_efuse()),
-            reset_rows=True)
-
     def run_single_step(self, step_id: str):
         p = self.profile
         if p is None:
@@ -939,9 +833,8 @@ class ProductionTestGUI(QWidget):
             "===== " + t("Single step: {label}").format(
                 label=row.label_text if row else step_id) + " =====")
         self._start(pipeline_mod.Pipeline.single_step(
-            p, self.sigrok, self._callbacks(), step_id, self._override_firmware(),
-            cable_index=self.probe_cable, image_override=self._override_dfu(),
-            efuse_key_override=self._override_efuse()),
+            p, self.sigrok, self._callbacks(), step_id, self.station,
+            cable_index=self._board_cable, all_profiles=self.profiles),
             reset_rows=False)
 
     def _fixture_present(self) -> bool:
@@ -962,54 +855,6 @@ class ProductionTestGUI(QWidget):
         except Exception:                                    # noqa: BLE001
             return False
         return False
-
-    def _ensure_fixture_unplugged_for_probe(self) -> bool:
-        """扫描外置烧录器前，若夹具还插着，提示操作员先拔掉再继续。
-
-        夹具和烧录器共用 0403:6010，而且 programmer_cli 只能按枚举序号选线缆，
-        夹具插着时扫描必失败。这一步用模态框明确引导，避免操作员盲扫。
-        """
-        while self._fixture_present():
-            r = QMessageBox.warning(
-                self, t("Unplug the Tang Nano 9K"),
-                t("The Tang Nano 9K fixture is still connected.\n"
-                  "It shares the FTDI ID with the programmer, so the scan\n"
-                  "cannot find the programmer while the fixture is in.\n\n"
-                  "Please UNPLUG the Tang Nano 9K, then click OK to retry."),
-                QMessageBox.Ok | QMessageBox.Cancel)
-            if r == QMessageBox.Cancel:
-                return False
-        return True
-
-    def run_probe(self):
-        """Manual 🔄 scan: probe the external JTAG programmer (read-only) and
-        read the eFuse lock state on a daemon thread."""
-        p = self.profile
-        if p is None:
-            return
-        if p.programmer is None:
-            self.log_signal.emit(
-                t("This product has no programmer.toml; no external programmer capability."))
-            return
-        if not self._ensure_fixture_unplugged_for_probe():
-            return
-        self.scan_btn.setEnabled(False)
-        self.scan_btn.setText("⏳")
-        self.log_signal.emit(
-            "===== " + t("Scan external programmer: {name}").format(
-                name=p.display_name) + " =====")
-        cfg = p.programmer
-
-        def worker():
-            try:
-                res = programmer.probe(cfg, self.log_signal.emit)
-            except Exception as e:  # never let the worker die silently
-                self.log_signal.emit("[probe] " + t("exception: {e}").format(e=e))
-                res = programmer.ProbeResult(
-                    False, None, None, "unknown", t("exception: {e}").format(e=e))
-            self.probe_signal.emit(res)
-
-        threading.Thread(target=worker, daemon=True).start()
 
     # ---------------------------------------------------- environment prep
     def _run_env_setup(self, action: str):
@@ -1064,41 +909,6 @@ class ProductionTestGUI(QWidget):
             self.env_deploy_btn.setToolTip("")
             self.env_remove_btn.setToolTip("")
 
-    def run_switch_mode(self):
-        p = self.profile
-        if p is None:
-            return
-        mode = self._detected_mode(p)
-        if mode == Mode.DFU:
-            to_mode, title = "app", "DFU → APP"
-        elif mode == Mode.APP:
-            to_mode, title = "dfu", "APP → DFU"
-        else:
-            QMessageBox.information(
-                self, t("Cannot switch"), t("No device for this product detected."))
-            return
-        self.log_signal.emit(
-            "===== " + t("Auxiliary: mode switch {title}").format(title=title) + " =====")
-        self._start(pipeline_mod.Pipeline.switch_mode(
-            p, self._callbacks(), to_mode=to_mode,
-            cable_index=self.probe_cable), reset_rows=False)
-
-    def run_reflash(self):
-        p = self.profile
-        if p is None:
-            return
-        fw = self._override_firmware() or p.app_firmware
-        if fw is None or not fw.is_file():
-            QMessageBox.warning(
-                self, t("Firmware missing"),
-                t("Firmware file not found: {path}").format(path=fw))
-            return
-        self.log_signal.emit(
-            "===== " + t("Reflash (repair): {name}").format(name=p.display_name) + " =====")
-        self._start(pipeline_mod.Pipeline.reflash(
-            p, self._callbacks(), fw, cable_index=self.probe_cable),
-            reset_rows=False)
-
     def run_sampling(self):
         p = self.profile
         if p is None or self.sigrok is None:
@@ -1128,42 +938,6 @@ class ProductionTestGUI(QWidget):
         if self.pipeline is not None:
             self.pipeline.request_cancel()
             self.log_signal.emit(t("Stop requested…"))
-
-    def _add_resource_row(self, grid, row: int, label: str, on_browse):
-        """一行"资源路径覆盖"：标签 + QLineEdit（placeholder 后填档案路径）+ … 浏览。
-        返回该行的 QLineEdit。"""
-        grid.addWidget(QLabel(label), row, 0)
-        edit = QLineEdit()
-        edit.setPlaceholderText(t("Defaults to product profile"))
-        btn = QPushButton("…"); btn.setFixedWidth(30)
-        btn.clicked.connect(on_browse)
-        grid.addWidget(edit, row, 1)
-        grid.addWidget(btn, row, 2)
-        return edit
-
-    def select_fw_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, t("Select app firmware"), "",
-            t("Firmware/Bitstream (*.bin *.fs);;All files (*)"))
-        if path:
-            self.fw_file_edit.setText(path)
-            self._update_enablement()
-
-    def select_dfu_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, t("Select DFU image"), "",
-            t("Bitstream (*.bin *.fs);;All files (*)"))
-        if path:
-            self.dfu_file_edit.setText(path)
-            self._update_enablement()
-
-    def select_ekey_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, t("Select eFuse key"), "",
-            t("eFuse key (*.ekey);;All files (*)"))
-        if path:
-            self.ekey_file_edit.setText(path)
-            self._update_enablement()
 
     def copy_report(self):
         QApplication.clipboard().setText(self.report_box.toPlainText())
@@ -1248,20 +1022,6 @@ class ProductionTestGUI(QWidget):
             self._switch_popup.close()
             self._switch_popup = None
 
-    def _on_probe(self, res):
-        self.scan_btn.setEnabled(True)
-        self.scan_btn.setText("🔄")
-        self.programmer_present = res.programmer_present
-        self.efuse_status = res.efuse
-        self.probe_cable = res.cable_index
-        if res.programmer_present:
-            self.log_signal.emit(
-                t("External programmer connected: {detail}").format(detail=res.detail))
-        else:
-            self.log_signal.emit(
-                t("External programmer not detected: {detail}").format(detail=res.detail))
-        self.refresh_device_status()   # 设备状态栏前缀的 eFuse 徽标 + 使能刷新
-
     def _on_finished(self, ok: bool, report: str):
         self._close_switch_popup()
         elapsed = time.time() - self._session_t0 if self._session_t0 else 0
@@ -1276,19 +1036,18 @@ class ProductionTestGUI(QWidget):
         self._render_report(ok, report, elapsed)
         self.step_label.setText("")
         self.pipeline = None
+        if self.armed:
+            # the verdict stays on the banner until the next board arrives
+            self.arm_state = "wait_remove"
+            self.step_label.setText(t("Remove the board under test"))
         self._update_enablement()
-        if ok and self._rescan_after:
-            self.log_signal.emit(
-                t("eFuse locked; auto re-scanning the external programmer to "
-                  "refresh state…"))
-            QTimer.singleShot(400, self.run_probe)
-        self._rescan_after = False
 
     def _render_report(self, ok: bool, detail: str, elapsed: float):
         p = self.profile
         lines = [
             "==== " + t("SLogic Production Test Report") + " ====",
             t("Time: {ts}").format(ts=time.strftime('%Y-%m-%d %H:%M:%S')),
+            t("Station: {s}").format(s=t(STATION_LABELS[self.station])),
             (t("Product: {name} ({id})").format(name=p.display_name, id=p.id)
              if p else t("Product: -")),
             t("Device: {devs}").format(
