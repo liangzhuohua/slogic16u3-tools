@@ -123,24 +123,46 @@ def _station_spec(profile: ProductProfile, station: str
                          "_flash_blank", (), True))
         return spec
 
-    # test station.  The link gate comes first and aborts the run: a board that
-    # did not reach its required link (32U3: 10G) is a FAIL without testing.
-    spec.append(("link:check", t(STEP_LABELS["link:check"]), "_check_link", (), True))
-    if profile.signal_source.is_fpga:
-        spec.append(("signal:flash", t(STEP_LABELS["signal:flash"]),
-                     "_signal_flash", (), False))
-        if profile.plan:
-            spec.append(("signal:all",
-                         t("Signal generator · all {n} patterns").format(
-                             n=len(profile.plan)),
-                         "_run_all_modes", (), False))
-    # Legacy path: a profile with no [[plan]] drives an external fixed source.
-    for i, ct in enumerate(profile.capture_tests):
-        spec.append((f"capture:{i}",
-                     t("Capture {ch}ch@{rate}").format(
-                         ch=ct.channels, rate=format_rate(ct.samplerate_hz)),
-                     "_capture_test", (i,), False))
+    # test station: one pass per link in [usb] links, e.g. 32U3 = 10G then 5G,
+    # so the board is proven on both links a user may plug it into.  The first
+    # link is a gate that aborts the run (a board that cannot reach 10G is a
+    # FAIL without testing); each later pass asks the operator to move the
+    # cable to that port and waits for the board to come back at that speed.
+    links = profile.links or (None,)
+    for n, link in enumerate(links):
+        name = _link_name(link)
+        sfx = f"@{name}" if link is not None else ""
+        if n == 0:
+            spec.append((f"link:check{sfx}",
+                         t("Check USB link ({link})").format(link=name) if link
+                         else t(STEP_LABELS["link:check"]),
+                         "_check_link", (link,), True))
+        else:
+            spec.append((f"link:replug{sfx}",
+                         t("Re-plug into a {link} port").format(link=name),
+                         "_await_link", (link,), True))
+        if profile.signal_source.is_fpga:
+            # reload the fixture each pass: moving the cable can disturb its SRAM
+            spec.append((f"signal:flash{sfx}", t(STEP_LABELS["signal:flash"]),
+                         "_signal_flash", (), False))
+            if profile.plan:
+                spec.append((f"signal:all{sfx}",
+                             t("Signal generator · all {n} patterns").format(
+                                 n=len(profile.plan)) + (f" ({name})" if link else ""),
+                             "_run_all_modes", (link,), False))
+        elif n == 0:
+            # Legacy path: a profile with no [[plan]] drives an external fixed
+            # source; it is not link-specific, so it runs once.
+            for i, ct in enumerate(profile.capture_tests):
+                spec.append((f"capture:{i}",
+                             t("Capture {ch}ch@{rate}").format(
+                                 ch=ct.channels, rate=format_rate(ct.samplerate_hz)),
+                             "_capture_test", (i,), False))
     return spec
+
+
+def _link_name(link: int | None) -> str:
+    return device_watch.link_name(link) if link else "-"
 
 
 def sequence_plan(profile: ProductProfile, station: str) -> list[tuple[str, str]]:
@@ -360,6 +382,7 @@ class Pipeline:
 
     _cable_index = None         # external-programmer cable index (from the GUI probe)
     _all_profiles = None        # every product profile (link:check sees all analyzers)
+    _link = None                # link of the current test pass (picks the plan configs)
     _image_override = None      # GUI 会话级：覆盖 DFU 镜像路径
     _efuse_key_override = None  # GUI 会话级：覆盖 eFuse 密钥路径
 
@@ -506,7 +529,7 @@ class Pipeline:
             + f" ({img.name} @ {op.spiaddr:#x})")
         return ok
 
-    def _check_link(self) -> bool:
+    def _check_link(self, link: int | None) -> bool:
         """Test-station gate: exactly one analyzer on the host, it is THIS
         product running its app firmware, and its USB link reached the
         product's minimum ([usb] min_link, e.g. 10G).  Fails -- and the station
@@ -518,7 +541,7 @@ class Pipeline:
         devs = device_watch.scan_devices(self._all_profiles or [p])
         apps = [d for d in devs if d.mode is device_watch.Mode.APP]
         mine = [d for d in apps if d.profile.id == p.id]
-        need = p.min_link
+        need = link
         need_txt = device_watch.link_name(need) if need else "-"
         self._log(f"[criteria] link: exactly 1 analyzer online, {p.display_name} in "
                   f"APP mode, link >= {need_txt}; seen: "
@@ -549,6 +572,37 @@ class Pipeline:
         self._log(t("USB link {got} (needs {need}): OK").format(got=got_txt, need=need_txt))
         self.report_lines.append(t("USB link") + f": PASS ({got_txt})")
         return True
+
+    def _await_link(self, link: int) -> bool:
+        """A later link pass: ask the operator to move the cable to a `link`
+        port, then wait (until cancelled) for exactly one of this product's
+        boards to come back in APP mode at EXACTLY that speed -- a 10G link
+        does not test 5G.  There is no firmware command to renegotiate a slower
+        link, so the re-plug is manual; the run continues by itself."""
+        p = self.profile
+        want = device_watch.link_name(link)
+        self._log(f"[criteria] link pass: exactly 1 {p.display_name} in APP mode at {want}")
+        self.cb.on_user_prompt(t("Move the board's USB cable to a {link} port; the "
+                                 "test continues when it is detected").format(link=want))
+        last = None
+        try:
+            while not self.cancel.is_set():
+                devs = device_watch.scan_devices(self._all_profiles or [p])
+                apps = [d for d in devs if d.mode is device_watch.Mode.APP]
+                mine = [d for d in apps if d.profile.id == p.id]
+                seen = ", ".join(str(d) for d in devs) or "none"
+                if seen != last:
+                    self._log(t("Waiting for {link}: seen {devs}").format(link=want, devs=seen))
+                    last = seen
+                if len(apps) == 1 and mine and (mine[0].speed or
+                                                self._sigrok_link_speed()) == link:
+                    self._log(t("USB link {got} (needs {need}): OK").format(got=want, need=want))
+                    self.report_lines.append(t("USB link") + f": PASS ({want})")
+                    return True
+                time.sleep(0.5)
+            return False
+        finally:
+            self.cb.on_user_prompt_clear()
 
     def _sigrok_link_speed(self) -> int | None:
         """Link speed from sigrok's scan line ("... - (10G) Sipeed SLogic32 U3"),
@@ -861,7 +915,7 @@ class Pipeline:
         self.report_lines.append("fixture: PASS")
         return True
 
-    def _run_all_modes(self) -> bool:
+    def _run_all_modes(self, link: int | None = None) -> bool:
         """Every pattern mode in one step.
 
         Runs all of them even if an early one fails: the modes are independent
@@ -869,6 +923,9 @@ class Pipeline:
         A single line per mode goes into the operator report, so the summary
         still reads as ten results rather than one aggregate.
         """
+        self._link = link
+        if link is not None:
+            self.report_lines.append("-- %s --" % _link_name(link))
         summary_before = len(self.report_lines)
         all_ok = True
         for entry in self.profile.plan:
@@ -928,8 +985,15 @@ class Pipeline:
             return False
 
         self._log(t("== M{mode} {label} ==").format(mode=entry.mode, label=entry.label))
+        configs = [c for c in entry.configs if c.link is None or c.link == self._link]
+        if not configs:
+            # a pass that silently tests less is exactly what must not happen
+            why = t("no config for the {link} pass").format(link=_link_name(self._link))
+            self.report_lines.append("M%d %s: FAIL (%s)" % (entry.mode, entry.label, why))
+            self._note_mode_result(entry, ok=False, failed=1, note=why)
+            return False
         all_ok = True
-        for cfg in entry.configs:
+        for cfg in configs:
             ok = self._run_mode_config(entry, cfg, ss, checks, patterns, waveform)
             all_ok = all_ok and ok
             if self.cancel.is_set():
@@ -1177,7 +1241,12 @@ if __name__ == "__main__":
             if st == "jtag":
                 assert all(i.startswith("blank:") for i in ids), ids
             else:
-                assert ids and ids[0] == "link:check", ids
+                assert ids and ids[0].startswith("link:check"), ids
+                # one fixture reload + pattern run per link pass, later passes
+                # start with a re-plug step
+                if prof.signal_source.is_fpga and prof.plan:
+                    assert sum(i.startswith("signal:all") for i in ids) == max(1, len(prof.links)), ids
+                    assert sum(i.startswith("link:replug") for i in ids) == max(0, len(prof.links) - 1), ids
             # the GUI list and the executed steps come from one table
             assert ids == [d.id for d in Pipeline(prof, None, cb, [])._sequence_defs(st)]
 
@@ -1191,7 +1260,7 @@ if __name__ == "__main__":
         try:
             pl = Pipeline(p32, None, cb, [])
             pl._all_profiles = all_profiles
-            return pl._check_link()
+            return pl._check_link(p32.min_link)
         finally:
             device_watch.scan_devices = real_scan
 

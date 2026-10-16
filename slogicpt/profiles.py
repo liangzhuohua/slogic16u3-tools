@@ -41,7 +41,8 @@ PLATFORM_KEY = {"Linux": "linux", "Windows": "windows", "Darwin": "darwin"}.get(
 
 SCHEMA_VERSION = 1
 
-# USB link names -> libusb_speed (LIBUSB_SPEED_*) codes, for [usb] min_link.
+# USB link names -> libusb_speed (LIBUSB_SPEED_*) codes, for [usb] links and
+# the per-config `link` tag of [[plan]].
 LINK_SPEEDS = {"USB2": 3, "5G": 4, "10G": 5, "20G": 6}
 
 
@@ -150,6 +151,10 @@ class PlanConfig:
     samples: str
     window_ms: float                     # capture length, chosen per mode
     max_samples: int                     # cap, so a high rate cannot explode
+    # the test-station pass this config belongs to (libusb speed code, e.g. 5 =
+    # 10G).  A slower link caps the rate (32U3 on 5G: 32ch@100M), so each link
+    # pass has its own configs.  None -> used in every pass.
+    link: int | None = None
 
 
 @dataclass(frozen=True)
@@ -323,9 +328,15 @@ class ProductProfile:
     programmer: Programmer | None       # None -> programmer.toml 缺失/无效，无烧录能力
     timeouts: Timeouts
     ota: OtaParams                      # DFU app.bin 烧录调参（product.toml [ota]）
-    # 产测工位的最低 USB 链路（libusb speed 码，[usb] min_link）；低于它直接 FAIL。
-    # None -> 不设门槛。
-    min_link: int | None = None
+    # 产测工位按顺序逐轮测试的 USB 链路（libusb speed 码，[usb] links），如 32U3
+    # (10G, 5G)：先在 10G 下全测通过，再换插 5G 口重测，保证用户两种链路都可用。
+    # 第一轮是门槛（达不到直接 FAIL）；空 -> 不设门槛、只测一轮。
+    links: tuple[int, ...] = ()
+
+    @property
+    def min_link(self) -> int | None:
+        """The first (gating) link pass, or None when no link is required."""
+        return self.links[0] if self.links else None
 
     @property
     def unitsize(self) -> int:
@@ -516,6 +527,15 @@ def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
     )
 
 
+def _parse_links(usb: dict) -> tuple[int, ...]:
+    """[usb] links = ["10G", "5G"] (ordered passes); the older single
+    min_link = "10G" still reads as one pass."""
+    raw = usb.get("links")
+    if raw is None:
+        raw = [usb["min_link"]] if usb.get("min_link") else []
+    return tuple(parse_link(x) for x in raw)
+
+
 def _parse_plan(doc: dict, num_channels: int, samplerates_hz: list[int],
                 capture: dict, problems: list, pid_for_log: str) -> list[PlanEntry]:
     """Parse [[plan]]. Falls back to wrapping any legacy [[capture.tests]]."""
@@ -546,6 +566,7 @@ def _parse_plan(doc: dict, num_channels: int, samplerates_hz: list[int],
                 samples=str(c.get("samples", default_samples)),
                 window_ms=float(c.get("window_ms", 20.0)),
                 max_samples=int(c.get("max_samples", 8_000_000)),
+                link=parse_link(c["link"]) if c.get("link") else None,
             ))
         if not configs:
             problems.append(Problem("warning", pid_for_log,
@@ -708,7 +729,7 @@ def _parse_profile(product_dir: Path,
             display_name=str(product["display_name"]),
             vid=int(usb["vid"]),
             app_pid=int(usb["app_pid"]),
-            min_link=parse_link(usb["min_link"]) if usb.get("min_link") else None,
+            links=_parse_links(usb),
             dfu_pid=int(dfu_pid) if dfu_pid is not None else None,
             driver=str(capture["driver"]),
             num_channels=num_channels,
@@ -742,6 +763,18 @@ def _parse_profile(product_dir: Path,
             timeouts=timeouts,
             ota=ota,
         )
+        # every link pass needs a config for every ready mode, or that pass would
+        # silently test less than the others
+        if signal_source.is_fpga:
+            for link in profile.links:
+                for e in plan:
+                    if e.ready and e.mode >= 0 and not any(
+                            c.link in (None, link) for c in e.configs):
+                        problems.append(Problem(
+                            "error", prod_id,
+                            t("plan M{mode} has no config for the {link} pass").format(
+                                mode=e.mode,
+                                link=next(k for k, v in LINK_SPEEDS.items() if v == link))))
         return profile, problems
     except (KeyError, ValueError, TypeError) as e:
         kind = t("missing required field") if isinstance(e, KeyError) else t("invalid field")

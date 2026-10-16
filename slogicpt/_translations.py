@@ -629,4 +629,18 @@ ZH: dict[str, str] = {
         '夹具 · 烧录信号发生器',
     'Check USB link':
         '检查 USB 链路',
+
+    # ---- test station: 10G then 5G link passes ---------------------------
+    'Check USB link ({link})':
+        '检查 USB 链路（{link}）',
+    'Re-plug into a {link} port':
+        '换插到 {link} 接口',
+    "Move the board's USB cable to a {link} port; the test continues when it is detected":
+        '请把被测板的 USB 线换插到 {link} 接口；检测到后自动继续测试',
+    'Waiting for {link}: seen {devs}':
+        '等待 {link} 链路：当前 {devs}',
+    'no config for the {link} pass':
+        '没有 {link} 轮的采集配置',
+    'plan M{mode} has no config for the {link} pass':
+        'plan M{mode} 没有 {link} 轮的采集配置',
 }

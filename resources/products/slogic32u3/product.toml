@@ -20,7 +20,10 @@ display_name = "SLogic32U3"
 vid = 0x359F
 app_pid = 0x3032
 dfu_pid = 0x30F2
-min_link = "10G"   # 产测工位最低链路（USB2/5G/10G）；低于它直接 FAIL，不进入图案测试
+# 产测工位逐轮测试的链路：先 10G 全测通过，再换插 5G 口全测通过，保证用户两种链路
+# 都能用。第一轮是门槛（达不到 10G 直接 FAIL）；第二轮工具提示换口、检测到 5G
+# 重新枚举后自动继续。下面每个 plan 的 configs 用 link 标注属于哪一轮。
+links = ["10G", "5G"]
 
 # ---------------------------------------------------------------------------
 # 夹具信号源
@@ -133,6 +136,10 @@ blank_flash_step_s = 120
 # 四档全测是刻意的：分析仪的规格包含全部四档，只测最省事的那一档
 # 就等于没验规格。优化后全矩阵约 63 秒（双阈值多出 12 秒）。
 
+# 每个模式两组配置：link = "10G" 一组、"5G" 一组。5G 下驱动限速（32U3：4ch@800 /
+# 8ch@400 / 16ch@200 / 32ch@100），SPI 各档仍有约 15 个采样点/时钟周期。M5 在 5G
+# 用 16ch@200M：18.5 ns 窄脉冲要 5 ns 分辨率才判得准（32ch@100M 下 CH2 的两个相隔
+# 18.5 ns 的脉冲会时并时分），CH16..CH31 的 1 kHz 填充已在 10G 轮测过。
 
 [[plan]]
 mode    = 0
@@ -141,7 +148,8 @@ ready   = true
 checks  = ["order"]
 note    = "every channel is SKIP on its own; the rotation check carries the verdict, because WHICH channel is high during which step is what identifies a wire"
 configs = [
-  { channels = 32, samplerate = "200M", window_ms = 10, max_samples = 8000000 }
+  { channels = 32, samplerate = "200M", window_ms = 10, max_samples = 8000000, link = "10G" },
+  { channels = 32, samplerate = "100M", window_ms = 10, max_samples = 8000000, link = "5G" }
 ]
 
 [[plan]]
@@ -150,7 +158,8 @@ label   = "4ch SPI @54 MHz"
 ready   = true
 checks  = ["protocol"]
 configs = [
-  { channels = 4 , samplerate = "1400M", window_ms = 2, max_samples = 8000000 }
+  { channels = 4 , samplerate = "1400M", window_ms = 2, max_samples = 8000000, link = "10G" },
+  { channels = 4 , samplerate = "800M", window_ms = 2, max_samples = 8000000, link = "5G" }
 ]
 
 [[plan]]
@@ -159,7 +168,8 @@ label   = "8ch SPI @27 MHz"
 ready   = true
 checks  = ["protocol"]
 configs = [
-  { channels = 8 , samplerate = "800M", window_ms = 10, max_samples = 8000000 }
+  { channels = 8 , samplerate = "800M", window_ms = 10, max_samples = 8000000, link = "10G" },
+  { channels = 8 , samplerate = "400M", window_ms = 10, max_samples = 8000000, link = "5G" }
 ]
 
 [[plan]]
@@ -168,7 +178,8 @@ label   = "16ch SPI @13.5 MHz"
 ready   = true
 checks  = ["protocol"]
 configs = [
-  { channels = 16, samplerate = "400M", window_ms = 10, max_samples = 8000000 }
+  { channels = 16, samplerate = "400M", window_ms = 10, max_samples = 8000000, link = "10G" },
+  { channels = 16, samplerate = "200M", window_ms = 10, max_samples = 8000000, link = "5G" }
 ]
 
 [[plan]]
@@ -177,7 +188,8 @@ label   = "32ch SPI + I2C + UART @6.75 MHz"
 ready   = true
 checks  = ["protocol"]
 configs = [
-  { channels = 32, samplerate = "200M", window_ms = 10, max_samples = 8000000 }
+  { channels = 32, samplerate = "200M", window_ms = 10, max_samples = 8000000, link = "10G" },
+  { channels = 32, samplerate = "100M", window_ms = 10, max_samples = 8000000, link = "5G" }
 ]
 
 [[plan]]
@@ -187,7 +199,8 @@ ready   = true
 checks  = ["freq"]
 note    = "CH2/CH3/CH4 判脉冲宽度（边沿率判不了）：CH2=两个18.5ns脉冲相隔18.5ns、CH3=每1ms一个18.5ns脉冲、CH4=宽度18.5ns~2.37us扫描。窗口 4 ms 是必须的：CH5..CH31 是 1 kHz（周期 1 ms），窗口不足 3 ms 时它们会被判成'无法判定'而直接红。"
 configs = [
-  { channels = 32, samplerate = "200M", window_ms = 4, max_samples = 8000000 }
+  { channels = 32, samplerate = "200M", window_ms = 4, max_samples = 8000000, link = "10G" },
+  { channels = 16, samplerate = "200M", window_ms = 4, max_samples = 8000000, link = "5G" }
 ]
 
 [[plan]]
@@ -197,5 +210,6 @@ ready   = true
 checks  = ["burst"]
 note    = "the envelope is verified by the structured check; per-pulse widths come from deep_checks.check_burst"
 configs = [
-  { channels = 32, samplerate = "200M", window_ms = 40, max_samples = 8000000 }
+  { channels = 32, samplerate = "200M", window_ms = 40, max_samples = 8000000, link = "10G" },
+  { channels = 32, samplerate = "100M", window_ms = 40, max_samples = 8000000, link = "5G" }
 ]
