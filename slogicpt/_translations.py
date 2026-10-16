@@ -24,19 +24,9 @@ ZH: dict[str, str] = {
     "see resources/README.md to add them.":
         "resources/products/ 下没有可用的产品档案，请参照 resources/README.md 放置。",
     # header
-    "Scan the external programmer (JTAG) and read the eFuse lock state":
-        "扫描外置烧录器(JTAG)并读 eFuse 锁定状态",
-    "Scan the external programmer (JTAG) and read the eFuse lock state. "
-    "The Tang Nano 9K fixture must be UNPLUGGED (it shares the FTDI ID with "
-    "the programmer).":
-        "扫描外置烧录器(JTAG)并读 eFuse 锁定状态。需要先拔掉 Tang Nano 9K 夹具"
-        "（它和烧录器共用 FTDI ID）。",
     "Product:": "产品:",
-    "Run Full Test": "一键全流程",
     "Stop": "停止",
     # sequence panel
-    "Test Sequence (auto in order, or ▶ per step)": "测试序列（自动按序执行，或点 ▶ 单步）",
-    "Auxiliary (not counted in sequence result)": "辅助操作（不计入序列结果）",
     # detail panes (report on top, live log on bottom) + ⚙ capture-params popup
     "Run Log": "运行日志",
     "Clear": "清空",
@@ -52,17 +42,11 @@ ZH: dict[str, str] = {
     "Session report (paste directly into feedback):": "本次会话报告（可直接粘贴反馈）:",
     "Copy Report": "复制报告",
     # resource-path overrides + one-time environment setup (under Auxiliary)
-    "Resource Path Overrides (blank = use profile; this session only)":
-        "资源路径覆盖（留空＝用产品档案；仅本次会话生效）",
-    "app firmware:": "app 固件:",
-    "DFU image:": "DFU 镜像:",
-    "eFuse key:": "eFuse 密钥:",
     "Environment Setup (one-time) · {name}": "环境准备（一次性）· {name}",
     "Deploy": "部署",
     "Remove": "移除",
     # banner
     "Standby": "待机",
-    "Standby — select a product and connect the device": "待机 — 选择产品并连接设备",
     # problem chip / dialog
     "{n} errors": "{n} 错误",
     "{n} warnings": "{n} 警告",
@@ -73,77 +57,22 @@ ZH: dict[str, str] = {
         "启动自检发现以下问题（缺失项对应功能已禁用，补齐资源后重启生效）：",
     "No issues": "无问题",
     # product change placeholders
-    "Profile has no firmware; please select manually": "档案未配置固件，请手动选择",
-    "Profile has no DFU image": "档案未配置 DFU 镜像",
-    "Profile has no eFuse key": "档案未配置 eFuse 密钥",
     "Profile defines no steps": "档案未定义任何步骤",
     # aux buttons
-    "Switch": "切换",
-    "Reflash (repair)": "复烧（返修）",
-    "Wait for DFU mode (prompt manual action on timeout) → rewrite app firmware "
-    "→ wait for app mode":
-        "等待设备进入 DFU 模式（超时提示人工操作）→ 重写应用固件 → 等待应用模式",
     # eFuse badge
-    "eFuse locked": "eFuse已锁",
-    "eFuse unlocked": "eFuse未锁",
-    "eFuse unknown": "eFuse未知",
     # device status
     "libusb backend not found (libusb-1.0.dll): cannot enumerate USB devices, "
     "DFU/APP detection disabled — see resources/README.md":
         "未找到 libusb 后端（libusb-1.0.dll）：无法枚举 USB 设备，"
         "DFU/APP 检测失效——见 resources/README.md",
-    "Online {conflict} differs from selected {name}: switch to the correct "
-    "product, or plug in the matching device":
-        "在线 {conflict}，与所选 {name} 不符：请切换到正确产品，或改插对应设备",
-    "also online: {items}": "另在线: {items}",
     "Device: {dev}": "设备: {dev}",
-    "No {name} device detected": "未检测到 {name} 设备",
     # enablement tooltips
-    "Online device is {online} (APP), differs from selected {sel} — switch to "
-    "the correct product or replug":
-        "在线设备为 {online}（APP），与所选 {sel} 不符——请切换到正确产品或改插设备",
-    "app firmware": "app 固件",
-    "external programmer (click 🔄 scan)": "外置烧录器（点 🔄 扫描）",
     "Missing: {items}": "缺少: {items}",
-    "Connect the external programmer: click 🔄 scan in the top bar":
-        "需要连接外置烧录器：点顶栏 🔄 扫描",
-    "Device must be in DFU mode (complete the previous blank-flash step first)":
-        "需设备处于 DFU 模式（先完成上一步烧空板）",
-    "Device must be in DFU mode": "需设备处于 DFU 模式",
-    "Device must be in APP mode (finish flashing APP and waiting for APP first)":
-        "需设备处于 APP 模式（先完成烧 APP 并等待 APP）",
     # fixture plug/unplug guidance (scan button & full-test setup)
     "Requires Tang Nano 9K plugged in": "需插着 Tang Nano 9K",
     "Requires Tang Nano 9K unplugged": "需拔掉 Tang Nano 9K",
-    "Unplug the Tang Nano 9K": "请拔掉 Tang Nano 9K",
-    "The Tang Nano 9K fixture is still connected.\n"
-    "It shares the FTDI ID with the programmer, so the scan\n"
-    "cannot find the programmer while the fixture is in.\n\n"
-    "Please UNPLUG the Tang Nano 9K, then click OK to retry.":
-        "Tang Nano 9K 夹具仍然连接着。\n"
-        "它和烧录器共用 FTDI ID (0403:6010)，夹具插着时\n"
-        "扫描无法找到烧录器。\n\n"
-        "请先拔出 Tang Nano 9K，再点击确定重试。",
-    "Full test setup": "全流程准备",
-    "Steps 1-6 run with the Tang Nano 9K UNPLUGGED.\n"
-    "Step 7 asks you to PLUG IN the Tang Nano 9K.\n\n"
-    "Click OK to start.":
-        "第 1-6 步运行时需要拔掉 Tang Nano 9K。\n"
-        "第 7 步会提示您插回 Tang Nano 9K。\n\n"
-        "点击确定开始。",
-    "Production final-check operation; proceed with caution": "产线终检操作，谨慎执行",
     # switch button
-    "This product has no DFU (dfu_pid); cannot switch": "该产品未配置 DFU（dfu_pid），无法切换",
-    "Currently DFU (flashing) mode; switch to APP (application) mode":
-        "当前为 DFU（烧录）模式，切换到 APP（应用）模式",
-    "Currently APP (application) mode; switch to DFU (flashing) mode":
-        "当前为 APP（应用）模式，切换到 DFU（烧录）模式",
-    "No device detected; cannot switch": "未检测到设备，无法切换",
     # actions / logs
-    "Run Full Test: {name}": "一键全流程: {name}",
-    "This product has no programmer.toml; no external programmer capability.":
-        "本产品未配置 programmer.toml，无外置烧录器能力。",
-    "Scan external programmer: {name}": "扫描外置烧录器: {name}",
     "exception: {e}": "异常: {e}",
     # env buttons
     "Redeploy": "重新部署",
@@ -152,21 +81,10 @@ ZH: dict[str, str] = {
     "Not deployed; nothing to remove": "尚未部署，无需移除",
     # mode switch / reflash / sampling
     "Cannot switch": "无法切换",
-    "No device for this product detected.": "未检测到该产品设备。",
-    "Auxiliary: mode switch {title}": "辅助操作: 模式切换 {title}",
-    "Firmware missing": "固件缺失",
-    "Reflash (repair): {name}": "复烧（返修）: {name}",
     "Parameter error": "参数错误",
     "Custom capture: {ch}ch@{rate}": "自定义采样: {ch}ch@{rate}",
     "Stop requested…": "已请求停止…",
     # resource rows / file dialogs
-    "Defaults to product profile": "默认使用产品档案",
-    "Select app firmware": "选择 app 固件",
-    "Firmware/Bitstream (*.bin *.fs);;All files (*)": "固件/位流 (*.bin *.fs);;所有文件 (*)",
-    "Select DFU image": "选择 DFU 镜像",
-    "Bitstream (*.bin *.fs);;All files (*)": "位流 (*.bin *.fs);;所有文件 (*)",
-    "Select eFuse key": "选择 eFuse 密钥",
-    "eFuse key (*.ekey);;All files (*)": "eFuse 密钥 (*.ekey);;所有文件 (*)",
     "Copied": "已复制",
     # language switch guard
     "Cannot switch language while a test is running.": "测试运行中无法切换语言。",
@@ -174,11 +92,7 @@ ZH: dict[str, str] = {
     "Current step: {label}": "当前步骤: {label}",
     "Running — {label}": "运行中 — {label}",
     "Manual mode switch required": "需要手动切换模式",
-    "External programmer connected: {detail}": "外置烧录器已连接：{detail}",
-    "External programmer not detected: {detail}": "未检测到外置烧录器：{detail}",
     "; failed steps: {items}": "；失败步骤: {items}",
-    "eFuse locked; auto re-scanning the external programmer to refresh state…":
-        "eFuse 已锁，自动复扫外置烧录器以刷新状态…",
     # report
     "SLogic Production Test Report": "SLogic 产测报告",
     "Time: {ts}": "时间: {ts}",
@@ -270,11 +184,9 @@ ZH: dict[str, str] = {
     "no serial port after flashing": "烧录后没有串口",
     "Signal generator on {p}, alive, mode 0": "信号发生器在 {p}，存活，模式 0",
     "Loading fixture: {name} (run {run})": "烧录夹具: {name} (run {run})",
-    "Fixture bitstream not found: {path}": "夹具比特流不存在: {path}",
     "Fixture flash FAILED; the capture steps will report SKIP":
         "夹具烧录失败；后续采样步骤将报 SKIP",
     "no firmware declared": "未声明固件",
-    "Fixtures · flash signal generator": "夹具 · 烧录信号发生器",
     "== signal generator: {p} patterns pass/skip, {f} fail ==":
         "== 信号发生器: {p} 个模式通过/跳过，{f} 个失败 ==",
     "Capture attempt {a}/{n} failed ({e}); retrying":
@@ -308,8 +220,6 @@ ZH: dict[str, str] = {
     "Programmer CLI not found": "未找到烧录器 CLI",
     "Trying cable-index {cable} (device={dev}) to read the IDCODE...":
         "尝试 cable-index {cable}（device={dev}）读器件码…",
-    "cable-index {cable} read a device, reading eFuse lock state...":
-        "cable-index {cable} 读到器件，读 eFuse 锁定状态…",
     "Result: external programmer connected, device={dev}, cable-index={cable}, eFuse={efuse}":
         "结果：外置烧录器已连接，device={dev}，cable-index={cable}，eFuse={efuse}",
     "Result: no device read on any cable -- external programmer not connected or unpowered":
