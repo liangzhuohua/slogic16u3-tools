@@ -62,16 +62,36 @@ def find_programmer(explicit: list[str] | None = None) -> Path | None:
 
 
 def _openfpga_exe() -> Path | None:
-    """openFPGALoader 的位置（产测资源里自带一份）。"""
-    cand = (RESOURCES_DIR / "bin" / "openFPGALoader" / "openFPGALoader.exe")
+    """openFPGALoader 的位置：产测资源里自带的一份，按平台挑；非 Windows 再退到
+    PATH（Linux 台架用发行版包）。资源目录里只有 Windows 的 .exe 时，Linux 绝不能
+    选它——执行失败会被吞掉，最后只报一句误导性的"找不到夹具"。"""
+    import shutil
+    import sys
+    bundled = RESOURCES_DIR / "bin" / "openFPGALoader"
+    if sys.platform == "win32":
+        cand = bundled / "openFPGALoader.exe"
+        return cand if cand.is_file() else None
+    cand = bundled / "openFPGALoader"
     if cand.is_file():
         return cand
-    cand = RESOURCES_DIR / "bin" / "openFPGALoader" / "openFPGALoader"
-    return cand if cand.is_file() else None
+    found = shutil.which("openFPGALoader")
+    return Path(found) if found else None
 
 
-def _flash_openfpga(bitstream: Path, log, timeout_s: float, cancel) -> bool:
+# Gowin op indexes that target the GW1NR's embedded flash (5 = embFlash
+# Erase,Program; 6 = ...,Verify). Anything else (2 = SRAM Program, 4 = SRAM
+# Program+Verify) loads SRAM -- the profile's intent: fast (~1.5 s) and the
+# fixture state is identical every run.
+_EMBFLASH_RUNS = (5, 6)
+
+
+def _flash_openfpga(bitstream: Path, run: int, log, timeout_s: float,
+                    cancel) -> bool:
     """用 openFPGALoader 按 FTDI 序列号烧夹具。成功返回 True。
+
+    按档案 firmware_run 选目标：SRAM（默认）或片上 Flash（-f，仅 run 5/6）。
+    以前固定带 -f 写 Flash：慢（~15 s）、磨损片上 Flash，且实测 GW1NR-9C 回报
+    "CRC check : FAIL" 后夹具不应答——与档案 firmware_run=2(SRAM) 的本意不符。
 
     序列号取"含 BL702 的那个"——夹具 Tang Nano 的 BL702 会把它报在自己的序列号
     里，本产品的 Gowin 烧录器不会。这与 programmer.py 挑烧录器的判据互为反面。
@@ -84,7 +104,10 @@ def _flash_openfpga(bitstream: Path, log, timeout_s: float, cancel) -> bool:
         return False
     log(t("Loading fixture with openFPGALoader: {name} (FTDI serial {s})").format(
         name=bitstream.name, s=serial))
-    argv = [str(exe), "-c", "ft2232", "--ftdi-serial", serial, "-f", str(bitstream)]
+    argv = [str(exe), "-c", "ft2232", "--ftdi-serial", serial]
+    if run in _EMBFLASH_RUNS:
+        argv.append("-f")
+    argv.append(str(bitstream))
     import tempfile
     with tempfile.TemporaryDirectory(prefix="slogic_fixture_") as tmp:
         logfile = Path(tmp) / "openfpga.log"
@@ -104,9 +127,10 @@ def _flash_openfpga(bitstream: Path, log, timeout_s: float, cancel) -> bool:
             return False
     for line in out.splitlines():
         log("   " + line.rstrip())
-    # Gowin 的 SRAM 写入成功会回 "CRC check: Success"；只看这一条，不看退出码 ——
-    # 二供 flash/器件型号不在它的表里时它会打过进度条又返回非零。
-    ok = "CRC check: Success" in out or "Done" in out
+    # 只认 "CRC check: Success"，不看退出码，也不认 "Done"：openFPGALoader 每个
+    # 阶段结束都打印 Done，CRC 失败（"CRC check : FAIL"）时照样有 Done——以前
+    # 认 Done 会把配置失败的夹具当成功，只能靠随后的串口存活检查兜住。
+    ok = "CRC check: Success" in out
     if not ok:
         log(t("openFPGALoader reported no success marker (rc={rc})").format(rc=rc))
     return ok
@@ -171,7 +195,7 @@ def flash(bitstream: Path, run: int, log_cb=None, *,
         log(t("Fixture bitstream not found: {p}").format(p=bitstream))
         return False
 
-    if _flash_openfpga(bitstream, log, timeout_s, cancel):
+    if _flash_openfpga(bitstream, run, log, timeout_s, cancel):
         return True
     log(t("openFPGALoader could not load the fixture; falling back to the "
           "Gowin programmer"))
@@ -259,14 +283,20 @@ def _kill_strays() -> None:
 def _selftest() -> int:
     import sys as _sys
     _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # openFPGALoader is the primary loader; programmer_cli is only the fallback,
+    # so either one being present means the fixture can be loaded.
+    ofl = _openfpga_exe()
     exe = find_programmer()
+    print("openFPGALoader: %s" % ofl)
     print("programmer_cli: %s" % exe)
-    if exe is None:
-        print("RESULT: not found")
+    if ofl is None and exe is None:
+        print("RESULT: no fixture loader found")
         return 1
-    r = subprocess.run([str(exe), "--scan-cables", "F"],
-                       capture_output=True, text=True, timeout=60)
-    print((r.stdout or "").strip())
+    if exe is not None:
+        r = subprocess.run([str(exe), "--scan-cables", "F"],
+                           capture_output=True, text=True, timeout=60)
+        print((r.stdout or "").strip())
+    print("RESULT: OK")
     return 0
 
 

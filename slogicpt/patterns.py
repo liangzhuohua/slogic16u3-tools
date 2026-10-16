@@ -537,70 +537,70 @@ def expected_spi_word() -> int:
 # ---------------------------------------------------------------------------
 
 def _selftest() -> int:
+    """Assert the CURRENT mode table (M0..M6, see MODE_LABELS / _MODES) against
+    the numbers in the handover spec, so an RTL/spec drift fails loudly here."""
     import sys
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     fails = 0
 
-    print("== M0 (32ch @200M) ==")
+    def check(cond: bool, what: str) -> None:
+        nonlocal fails
+        print("  %s  %s" % ("ok  " if cond else "FAIL", what))
+        if not cond:
+            fails += 1
+
+    def near(a, b, tol=0.01) -> bool:
+        return a is not None and abs(a - b) <= tol
+
+    print("== M0 wiring: walking one, 100 us/step over 32 ch -> 312.5 Hz, "
+          "verdict owned by the rotation check ==")
     e = expected(0, 32, 200e6)
-    print("  CH0 %.1f Hz (expect 964285.7)" % e[0].freq_hz)
-    print("  CH1 %.1f Hz (expect 1000)" % e[1].freq_hz)
-    for ch in (2, 3, 4):
-        print("  CH%d static %s (expect %d)" % (ch, e[ch].static, 0 if ch % 2 else 1))
-    if abs(e[0].freq_hz - 964285.714) > 0.01 or e[1].freq_hz != 1000.0:
-        print("  FAIL"); fails += 1
+    check(all(near(x.freq_hz, 312.5) for x in e), "every channel 312.5 Hz")
+    check(all(x.kind is Kind.SKIP for x in e), "per-channel verdict handed to 'order'")
 
-    print("== M1 ladder, CH7..CH31 ==")
-    e = expected(1, 32, 200e6)
-    print("  CH7  %10.1f Hz" % e[7].freq_hz)
-    print("  CH11 %10.1f Hz  <- must be 40000, not the 50000 the RTL comment says"
-          % e[11].freq_hz)
-    print("  CH16 %10.1f Hz" % e[16].freq_hz)
-    print("  CH19 %10.1f Hz" % e[19].freq_hz)
-    print("  CH0  kind=%s (108 MHz > 100 MHz Nyquist)"
-          % e[0].kind.value)
-    if abs(e[11].freq_hz - 40000.0) > 0.1:
-        print("  FAIL: CH11 model"); fails += 1
-    if e[0].kind is not Kind.SKIP:
-        print("  FAIL: CH0 at 32ch@200M should be SKIP (above Nyquist)"); fails += 1
-    e400 = expected(1, 32, 400e6)
-    if e400[0].kind is Kind.SKIP:
-        print("  FAIL: CH0 at 16ch@400M is 108 MHz < 200 MHz Nyquist, should check")
-        fails += 1
+    print("== M1..M4 SPI banks: SCLK rate, CS_N word rate, per-instance words ==")
+    for mode, nch, fs, sclk in ((1, 4, 1400e6, 54e6), (2, 8, 800e6, 27e6),
+                                (3, 16, 400e6, 13.5e6), (4, 32, 200e6, 6.75e6)):
+        e = expected(mode, nch, fs)
+        inst = SPI_BANK_MODES[mode][0]
+        for i in range(inst):
+            base = 4 * i
+            check(e[base].kind is Kind.FREQ and near(e[base].freq_hz, sclk),
+                  "M%d SPI%d SCLK %.2f MHz" % (mode, i, sclk / 1e6))
+            check(near(e[base + 3].freq_hz, sclk / SPI_PHASES_PER_WORD * 2, 0.5),
+                  "M%d SPI%d CS_N one word per CS pulse" % (mode, i))
+            check(e[base + 1].kind is Kind.PROTOCOL and e[base + 2].kind is Kind.PROTOCOL,
+                  "M%d SPI%d MOSI/MISO decoded by the SPI checker" % (mode, i))
+    check([spi_bank_word(i) for i in range(4)] == [0xA5C3, 0xB4D2, 0x87E1, 0x96F0],
+          "instance words = 0xA5C3 ^ (i * 0x1111)")
 
-    print("== M5 duty sweep ==")
+    print("== M4 extras: I2C on CH24/25, UART TX on CH26, rest undriven ==")
+    e = expected(4, 32, 200e6)
+    check(near(e[24].freq_hz, 100_000.0), "CH24 I2C SCL 100 kHz")
+    check(e[25].kind is Kind.PROTOCOL and e[26].kind is Kind.PROTOCOL,
+          "CH25 SDA / CH26 UART decoded by protocol checkers")
+    check(all(x.kind is Kind.STATIC and x.static == 0 for x in e[27:]),
+          "CH27..CH31 static low")
+    check(4 in NEEDS_THRESHOLD_GROUPS, "M4 also captured at the bank-3 threshold")
+
+    print("== M5 narrow pulse ==")
     e = expected(5, 32, 200e6)
-    print("  CH0..CH30 %.3f Hz; duty CH0 %.2f%% CH30 %.2f%%"
-          % (e[0].freq_hz, e[0].duty_pct, e[30].duty_pct))
-    print("  CH31 kind=%s static=%s  (%s)" % (e[31].kind.value, e[31].static, e[31].note))
-    if abs(e[0].freq_hz - 421875.0) > 0.1 or abs(e[30].duty_pct - 96.875) > 0.01:
-        print("  FAIL"); fails += 1
-    if e[31].kind is not Kind.STATIC or e[31].static != 1:
-        print("  FAIL: CH31 must be static high, it has a 100% duty cycle"); fails += 1
+    check(e[0].kind is Kind.FREQ and near(e[0].freq_hz, 100_000.0), "CH0 100 kHz")
+    check(e[1].kind is Kind.STATIC and e[1].static == 0, "CH1 held low")
+    check(all(x.kind is Kind.SKIP for x in e[2:5]),
+          "CH2..CH4 widths owned by the narrow-pulse width check")
+    check(all(x.kind is Kind.FREQ and near(x.freq_hz, 1000.0) for x in e[5:]),
+          "CH5..CH31 1 kHz fill")
+    check(5 in NEEDS_THRESHOLD_GROUPS, "M5 also captured at the bank-3 threshold")
 
-    print("== window awareness ==")
-    e20 = expected(1, 32, 200e6, window_s=0.020)
-    e200 = expected(1, 32, 200e6, window_s=0.200)
-    n20 = sum(1 for x in e20 if x.kind in (Kind.FREQ, Kind.DUTY))
-    n200 = sum(1 for x in e200 if x.kind in (Kind.FREQ, Kind.DUTY))
-    print("  M1 verifiable channels: %d in a 20 ms window, %d in a 200 ms window"
-          % (n20, n200))
-    print("  CH19 (100 Hz) at 20 ms -> %s" % e20[19].kind.value)
-    print("     %s" % e20[19].note[:96])
-    print("  no window given -> %d verifiable (backwards compatible)"
-          % sum(1 for x in expected(1, 32, 200e6) if x.kind in (Kind.FREQ, Kind.DUTY)))
-    if not (n20 < n200) or e20[19].kind is not Kind.SKIP:
-        print("  FAIL: a slow channel in a short window should be SKIP"); fails += 1
+    print("== M6 burst: envelope owned by the burst check ==")
+    e = expected(6, 32, 200e6)
+    check(all(x.kind is Kind.SKIP for x in e), "every channel handed to 'burst'")
+    check(all(near(x.freq_hz, 50.0) for x in e[4:]),
+          "CH4..CH31 1 kHz only inside the 1 ms burst every 20 ms -> 50 Hz mean")
 
-    print("== M8 protocol rates ==")
-    e = expected(8, 32, 200e6)
-    print("  CH2 SPI CLK %.0f Hz" % e[2].freq_hz)
-    print("  CH4 CS_N     %.2f Hz (expect 58823.53 = 1MHz/17)" % e[4].freq_hz)
-    print("  CH5 I2C SCL  %.0f Hz" % e[5].freq_hz)
-    print("  CH7 I2S WS   %.0f Hz" % e[7].freq_hz)
-    print("  CH9 I2S BCLK %.0f Hz" % e[9].freq_hz)
-    if abs(e[4].freq_hz - 58823.529) > 0.01:
-        print("  FAIL: CS_N rate"); fails += 1
+    print("== mode table is exactly M0..M6 ==")
+    check(sorted(_MODES) == list(range(7)) == sorted(MODE_LABELS), "7 modes, labels match")
 
     print("== golden PRBS ==")
     g = golden_prbs(4)

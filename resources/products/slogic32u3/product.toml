@@ -110,7 +110,7 @@ verify = true
 # 恢复）。桥接器单事务缓冲有限，明显小于 200；参考读回路径 read_chunk=64（桥每次
 # CMD_READ_DATA 只回一个 ≤64B 批量包），写入也取 64 —— 比 12 快得多，又留足余量。
 # 若确认稳定，可逐级上调（64 → 96 → 128）找可靠上限；每次上调后连跑几遍完整烧写。
-write_chunk = 64
+write_chunk = 48             # 本机实测：48 稳定可用（32U3）；64 未经实测验证
 read_chunk = 64
 usb_timeout_ms = 1000
 wip_timeout_s = 5.0

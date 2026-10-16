@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import threading
 import time
+import re
 from dataclasses import dataclass
 
 try:                                    # 集成进 slogicpt 时走这条
@@ -84,6 +85,7 @@ class PortInfo:
     device: str
     description: str
     serial_number: str | None
+    location: str | None = None      # Linux: "1-7.4.4:1.1" (…:config.interface)
 
 
 def find_ports() -> list[PortInfo]:
@@ -93,7 +95,8 @@ def find_ports() -> list[PortInfo]:
     out = []
     for p in list_ports.comports():
         if p.vid == FPGA_VID and p.pid == FPGA_PID:
-            out.append(PortInfo(p.device, p.description or "", p.serial_number))
+            out.append(PortInfo(p.device, p.description or "", p.serial_number,
+                                getattr(p, "location", None)))
     return out
 
 
@@ -129,6 +132,14 @@ def find_port(explicit: str | None = None) -> str:
              if FPGA_SERIAL_HINT.lower() in (c.serial_number or "").lower()]
     if len(bl702) == 1:
         return bl702[0].device
+    # One BL702 seen twice: on Linux its FT2232 emulation exposes BOTH interfaces
+    # as ttyUSB -- A (interface 0) is JTAG, B (interface 1) is the UART that
+    # speaks the mode protocol. Windows usually shows only one COM port.
+    if len({c.serial_number for c in bl702}) == 1:
+        uart = [c for c in bl702
+                if re.search(r"\.1$", c.location or "")]
+        if len(uart) == 1:
+            return uart[0].device
 
     names = ", ".join("%s(%s)" % (c.device, c.serial_number) for c in cands)
     hint = (t("none of them reports a serial containing \"{h}\"")

@@ -479,4 +479,88 @@ ZH: dict[str, str] = {
         "复位后未找到设备，请检查连接状态",
     "Required input/output endpoints not found": "未找到所需的输入/输出端点",
     "USB communication error: {e}": "USB通信错误: {e}",
+
+    # ---- fixture / signal source / plan (SLogic32U3 handover) ------------
+    'Cannot find the fixture: no 0403:6010 device reports a BL702 serial':
+        '找不到夹具：没有任何 0403:6010 设备的序列号含 BL702',
+    'openFPGALoader could not load the fixture; falling back to the Gowin programmer':
+        'openFPGALoader 未能烧录夹具，改用 Gowin 编程器',
+    'Gowin programmer_cli not found; cannot load the fixture':
+        '未找到 Gowin programmer_cli，无法烧录夹具',
+    'Loading fixture with openFPGALoader: {name} (FTDI serial {s})':
+        '用 openFPGALoader 烧录夹具：{name}（FTDI 序列号 {s}）',
+    'openFPGALoader reported no success marker (rc={rc})':
+        'openFPGALoader 未报告成功标记（rc={rc}）',
+    'Fixture bitstream not found: {p}':
+        '找不到夹具位流：{p}',
+    'Fixture programming FAILED (exit {rc})':
+        '夹具烧录失败（退出码 {rc}）',
+    'Fixture programming timed out after {s}s':
+        '夹具烧录超时（{s} 秒）',
+    'openFPGALoader timed out after {s}s':
+        'openFPGALoader 超时（{s} 秒）',
+    'Cannot execute {p}':
+        '无法执行 {p}',
+    'none of them reports a serial containing "{h}"':
+        '没有一个的序列号含 "{h}"',
+    '{n} of them report a serial containing "{h}"':
+        '其中 {n} 个的序列号含 "{h}"',
+    "Multiple 0403:6010 ports found ({names}); {hint}. The Gowin USB programmer is an FT2232H with the same IDs and two ports of its own, so unplug it if you do not need it, or set signal_source.serial explicitly to the fixture's port.":
+        '发现多个 0403:6010 串口（{names}）；{hint}。Gowin USB 编程器是同 ID 的 FT2232H，自带两个串口——不需要时请拔掉它，或在 signal_source.serial 中显式指定夹具的串口。',
+    'No Tang Nano signal generator found (looking for {vid:#06x}:{pid:#06x})':
+        '未找到 Tang Nano 信号发生器（查找 {vid:#06x}:{pid:#06x}）',
+    'Configured port {p} is not present':
+        '配置的串口 {p} 不存在',
+    '{p} opened but the FPGA did not answer; is the bitstream loaded?':
+        '{p} 已打开但 FPGA 无应答；位流是否已加载？',
+    'Cannot open {p}: {e}':
+        '无法打开 {p}：{e}',
+    'No confirmation for mode {m} on {p}':
+        '{p} 未确认切换到模式 {m}',
+    'signal_source.firmware is not declared':
+        '未声明 signal_source.firmware',
+    '== M{mode} {label} ==':
+        '== M{mode} {label} ==',
+    '-- {label} ({ms} ms window, {n} samples) --':
+        '-- {label}（窗口 {ms} ms，{n} 个采样点）--',
+    '   {label}: {verdict}  ({p} ok / {f} fail / {s} skip)':
+        '   {label}: {verdict}  （{p} 通过 / {f} 失败 / {s} 覆盖）',
+    'could not load the signal generator':
+        '信号发生器烧录失败',
+    'Signal generator not reachable after flashing: {e}':
+        '烧录后信号发生器无法连通：{e}',
+    'capture failed':
+        '采集失败',
+    'PASS':
+        'PASS',
+    'FAIL':
+        'FAIL',
+    'signal_source.type is fpga but no firmware is declared; the fixture cannot be reflashed by the tool':
+        'signal_source.type 为 fpga 但未声明 firmware，工具无法重烧夹具',
+    'signal_source.type {k!r} is not one of fpga/external/none':
+        'signal_source.type {k!r} 不是 fpga/external/none 之一',
+    'signal_source.channel_order must be a permutation of 0..{n}':
+        'signal_source.channel_order 必须是 0..{n} 的一个排列',
+    'plan[{i}] has no usable configs':
+        'plan[{i}] 没有可用的 configs',
+    'capture.threshold_groups[{i}] has an out-of-range channel':
+        'capture.threshold_groups[{i}] 含越界通道',
+    'plan[{i}].configs[{j}].channels={ch} exceeds num_channels':
+        'plan[{i}].configs[{j}].channels={ch} 超过 num_channels',
+    'plan[{i}].configs[{j}].samplerate={sr} not in the samplerates list':
+        'plan[{i}].configs[{j}].samplerate={sr} 不在 samplerates 列表中',
+    'Cannot tell the programmer apart from the fixture: every 0403:6010 device reports a BL702 serial':
+        '无法区分编程器与夹具：所有 0403:6010 设备的序列号都含 BL702',
+    " The signal-generator fixture is plugged in ({ports}); it shares the FTDI ID 0403:6010 with this product's programmer, so unplug the fixture to flash the board under test.":
+        ' 信号发生器夹具已插入（{ports}）；它与本产品的编程器同为 FTDI 0403:6010，请拔掉夹具后再烧录被测板。',
+    "openFPGALoader will target the FTDI device with serial {s} ({p}); the fixture's BL702 is excluded by its serial":
+        'openFPGALoader 将使用序列号为 {s} 的 FTDI 设备（{p}）；夹具的 BL702 已按序列号排除',
+    'cable-index {cable} read the right device, reading eFuse lock state...':
+        'cable-index {cable} 读到正确的器件，读 eFuse 锁定状态…',
+    '{n} candidate programmer devices found; using the first':
+        '找到 {n} 个候选编程器，使用第一个',
+    'cable-index {cable} answered, but it is a different device: read {got:#010x}, expected {exp:#010x} -- trying the next cable':
+        'cable-index {cable} 有应答但器件不符：读到 {got:#010x}，应为 {exp:#010x}——尝试下一根线缆',
+    'cable-index {cable} answered but reported no IDCODE to compare; using it':
+        'cable-index {cable} 有应答但未报告可比对的 IDCODE；使用它',
 }
