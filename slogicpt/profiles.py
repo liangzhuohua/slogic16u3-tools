@@ -75,6 +75,83 @@ class CaptureTest:
     samples: str
 
 
+# =============================================================================
+# Signal source and test plan
+#
+# The original profile drove a single fixed external source (10 MHz 50% TTL) and
+# could only check frequency and duty. The Tang Nano 9K fixture replaces it with
+# ten patterns, which needs two new sections:
+#
+#   [signal_source]   how to reach the generator (serial port, VID/PID, bitstream)
+#   [[plan]]          which modes to run, at which channel counts and rates, and
+#                     which kinds of check apply
+#
+# The expectations themselves deliberately do NOT live in the TOML: the full matrix
+# is 10 modes x 4 rate groups x 32 channels = 1280 numbers, and a change to the RTL
+# should need exactly one edit. They are computed in patterns.py instead.
+# =============================================================================
+
+@dataclass(frozen=True)
+class SignalSource:
+    """The fixture that generates the test patterns."""
+
+    kind: str                            # "fpga" | "external" | "none"
+    serial: str                          # "auto" or an explicit port name
+    vid: int
+    pid: int
+    baud: int
+    settle_ms: int                       # quiet time after a mode change
+    reply_timeout_ms: int
+    firmware: Path | None                # Tang Nano bitstream, for the fixture step
+    firmware_run: int                    # Gowin operation index (2 = SRAM Program)
+    firmware_device: str                 # Gowin --device, e.g. GW1NR-9C
+    firmware_cable: str                  # Gowin --cable, e.g. "USB Debugger A"
+    channel_order: tuple[int, ...]       # generator channel -> analyser channel
+
+    @property
+    def is_fpga(self) -> bool:
+        return self.kind == "fpga"
+
+
+@dataclass(frozen=True)
+class ThresholdGroup:
+    """Channels that need a different input threshold from the default.
+
+    The fixture drives two logic families into one analyser: most channels are
+    3.3 V, but CH20..CH25 come from bank 3, which the on-board PSRAM locks to
+    1.8 V. There is one global threshold per capture, and measurement showed no
+    single value serves both -- so those channels are captured a second time at a
+    lower threshold and their verdict is taken from that pass.
+    """
+
+    channels: tuple[int, ...]
+    voltage_threshold_v: float
+    label: str
+
+
+@dataclass(frozen=True)
+class PlanConfig:
+    """One channel-count / sample-rate combination."""
+
+    channels: int
+    samplerate_hz: int
+    samples: str
+    window_ms: float                     # capture length, chosen per mode
+    max_samples: int                     # cap, so a high rate cannot explode
+
+
+@dataclass(frozen=True)
+class PlanEntry:
+    """One pattern mode and how to exercise it."""
+
+    mode: int
+    label: str
+    ready: bool                          # False -> report SKIP with `note`
+    note: str
+    checks: tuple[str, ...]
+    configs: tuple[PlanConfig, ...]
+
+
 # 烧空板默认 Gowin op：54 = "exFlash Erase,Program,Verify Arora V"。该操作经
 # --fsFile 同时接受 ASCII 的 .fs 与二进制 .bin 位流（实测 GW5AT-60B 的 dfu.bin
 # 二进制位流用 run 54 烧写并校验通过）。16U3/32U3 通用。
@@ -218,6 +295,9 @@ class ProductProfile:
     default_samplerate_hz: int
     capture_tests: list[CaptureTest]
     expected: ExpectedSignal
+    signal_source: SignalSource          # Tang Nano fixture, or an inert source
+    plan: list[PlanEntry]                # modes x configs, with their check sets
+    threshold_groups: list[ThresholdGroup]   # channels needing another threshold
     app_firmware: Path | None           # resolved absolute path (may not exist yet)
     app_flash_addr: int
     verify_after_flash: bool
@@ -365,6 +445,134 @@ def load_programmer(product_dir: Path,
         return None, [t("programmer.toml [programmer] invalid: {e}").format(e=e)]
 
 
+def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
+                         problems: list, pid_for_log: str) -> SignalSource:
+    """Parse [signal_source]. Absent section -> an inert "none" source."""
+    raw = doc.get("signal_source")
+    if not raw:
+        # Profiles written before the fixture existed have no signal_source. They
+        # keep working: the capture steps just report SKIP instead of failing.
+        return SignalSource(kind="none", serial="auto", vid=0x0403, pid=0x6010,
+                            baud=115200, settle_ms=400, reply_timeout_ms=1000,
+                            firmware=None, firmware_run=2,
+                            firmware_device="GW1NR-9C",
+                            firmware_cable="USB Debugger A",
+                            channel_order=tuple(range(num_channels)))
+
+    kind = str(raw.get("type", "none")).lower()
+    if kind not in ("fpga", "external", "none"):
+        problems.append(Problem("error", pid_for_log,
+                                t("signal_source.type {k!r} is not one of "
+                                  "fpga/external/none").format(k=kind)))
+        kind = "none"
+
+    fw_rel = raw.get("firmware")
+    firmware = (product_dir / str(fw_rel)).resolve() if fw_rel else None
+
+    order_raw = raw.get("channel_order")
+    if order_raw is None:
+        order = tuple(range(num_channels))
+    else:
+        order = tuple(int(v) for v in order_raw)
+        if len(order) != num_channels or sorted(order) != list(range(num_channels)):
+            problems.append(Problem(
+                "error", pid_for_log,
+                t("signal_source.channel_order must be a permutation of 0..{n}").format(
+                    n=num_channels - 1)))
+            order = tuple(range(num_channels))
+
+    return SignalSource(
+        kind=kind,
+        serial=str(raw.get("serial", "auto")),
+        vid=int(raw.get("vid", 0x0403)),
+        pid=int(raw.get("pid", 0x6010)),
+        baud=int(raw.get("baud", 115200)),
+        settle_ms=int(raw.get("settle_ms", 400)),
+        reply_timeout_ms=int(raw.get("reply_timeout_ms", 1000)),
+        firmware=firmware,
+        firmware_run=int(raw.get("firmware_run", 2)),
+        firmware_device=str(raw.get("firmware_device", "GW1NR-9C")),
+        firmware_cable=str(raw.get("firmware_cable", "USB Debugger A")),
+        channel_order=order,
+    )
+
+
+def _parse_plan(doc: dict, num_channels: int, samplerates_hz: list[int],
+                capture: dict, problems: list, pid_for_log: str) -> list[PlanEntry]:
+    """Parse [[plan]]. Falls back to wrapping any legacy [[capture.tests]]."""
+    entries: list[PlanEntry] = []
+    default_samples = str(capture.get("default_samples", "1M"))
+
+    for i, raw in enumerate(doc.get("plan", [])):
+        mode = int(raw.get("mode", i))
+        configs = []
+        for j, c in enumerate(raw.get("configs", [])):
+            ch = int(c["channels"])
+            rate = parse_rate(c["samplerate"])
+            if ch > num_channels:
+                problems.append(Problem(
+                    "error", pid_for_log,
+                    t("plan[{i}].configs[{j}].channels={ch} exceeds num_channels").format(
+                        i=i, j=j, ch=ch)))
+                continue
+            if rate not in samplerates_hz:
+                problems.append(Problem(
+                    "error", pid_for_log,
+                    t("plan[{i}].configs[{j}].samplerate={sr} not in the samplerates "
+                      "list").format(i=i, j=j, sr=c["samplerate"])))
+                continue
+            configs.append(PlanConfig(
+                channels=ch,
+                samplerate_hz=rate,
+                samples=str(c.get("samples", default_samples)),
+                window_ms=float(c.get("window_ms", 20.0)),
+                max_samples=int(c.get("max_samples", 8_000_000)),
+            ))
+        if not configs:
+            problems.append(Problem("warning", pid_for_log,
+                                    t("plan[{i}] has no usable configs").format(i=i)))
+        entries.append(PlanEntry(
+            mode=mode,
+            label=str(raw.get("label", "mode %d" % mode)),
+            ready=bool(raw.get("ready", True)),
+            note=str(raw.get("note", "")),
+            checks=tuple(str(c) for c in raw.get("checks", ["freq"])),
+            configs=tuple(configs),
+        ))
+
+    if not entries:
+        # No [[plan]]: keep the legacy shape usable by treating every
+        # [[capture.tests]] entry as a config of a single "no mode" plan entry.
+        legacy = [PlanConfig(int(c["channels"]), parse_rate(c["samplerate"]),
+                             str(c.get("samples", default_samples)), 20.0,
+                             8_000_000)
+                  for c in capture.get("tests", [])]
+        if legacy:
+            entries.append(PlanEntry(mode=-1, label="legacy capture",
+                                     ready=True, note="",
+                                     checks=("freq", "duty"),
+                                     configs=tuple(legacy)))
+    return entries
+
+
+def _parse_threshold_groups(doc: dict, num_channels: int, default_v: float,
+                            problems: list, pid_for_log: str) -> list[ThresholdGroup]:
+    """Parse [[capture.threshold_groups]]."""
+    out: list[ThresholdGroup] = []
+    for i, raw in enumerate(doc.get("capture", {}).get("threshold_groups", [])):
+        chans = tuple(int(c) for c in raw.get("channels", []))
+        if not chans or any(c < 0 or c >= num_channels for c in chans):
+            problems.append(Problem(
+                "error", pid_for_log,
+                t("capture.threshold_groups[{i}] has an out-of-range channel").format(i=i)))
+            continue
+        v = float(raw.get("voltage_threshold_v", default_v))
+        out.append(ThresholdGroup(channels=chans, voltage_threshold_v=v,
+                                  label=str(raw.get("label",
+                                                    "%.1f V group" % v))))
+    return out
+
+
 def _parse_profile(product_dir: Path,
                    shared: dict | None = None) -> tuple[ProductProfile | None, list[Problem]]:
     problems: list[Problem] = []
@@ -387,7 +595,7 @@ def _parse_profile(product_dir: Path,
         product = doc["product"]
         usb = doc["usb"]
         capture = doc["capture"]
-        expected = doc["expected"]
+        expected = doc.get("expected", {})
         firmware = doc.get("firmware", {})
 
         prod_id = str(product["id"])
@@ -431,7 +639,7 @@ def _parse_profile(product_dir: Path,
                 return err(t("capture.tests[{i}].samplerate={sr} not in samplerates list").format(
                     i=i, sr=ct['samplerate']))
             tests.append(CaptureTest(ch, rate, str(ct.get("samples", capture.get("default_samples", "1M")))))
-        if not tests:
+        if not tests and not doc.get("plan"):
             problems.append(Problem("warning", prod_id,
                                     t("capture.tests is empty; one-click flow has no test points")))
 
@@ -463,6 +671,19 @@ def _parse_profile(product_dir: Path,
         )
         ota = _parse_ota(doc.get("ota", {}))
 
+        default_vth = float(capture.get("voltage_threshold_v", 1.6))
+        signal_source = _parse_signal_source(doc, product_dir, num_channels,
+                                             problems, prod_id)
+        plan = _parse_plan(doc, num_channels, samplerates_hz, capture,
+                           problems, prod_id)
+        threshold_groups = _parse_threshold_groups(doc, num_channels, default_vth,
+                                                   problems, prod_id)
+        if plan and signal_source.is_fpga and signal_source.firmware is None:
+            problems.append(Problem(
+                "warning", prod_id,
+                t("signal_source.type is fpga but no firmware is declared; the "
+                  "fixture cannot be reflashed by the tool")))
+
         profile = ProductProfile(
             id=prod_id,
             display_name=str(product["display_name"]),
@@ -474,14 +695,21 @@ def _parse_profile(product_dir: Path,
             max_bandwidth_mbps=max_bw,
             channel_options=channel_options,
             samplerates_hz=samplerates_hz,
-            voltage_threshold_v=float(capture.get("voltage_threshold_v", 1.6)),
+            voltage_threshold_v=default_vth,
             default_samples=str(capture.get("default_samples", "1M")),
             default_channels=default_channels,
             default_samplerate_hz=default_samplerate_hz,
             capture_tests=tests,
+            signal_source=signal_source,
+            plan=plan,
+            threshold_groups=threshold_groups,
             expected=ExpectedSignal(
-                freq_hz=float(expected["freq_hz"]),
-                duty_pct=float(expected["duty_pct"]),
+                # Optional now: a fixture-based product gets its expectations from
+                # patterns.py, so [expected] only carries the tolerances and the
+                # freq/duty pair is left at zero. Legacy profiles that still drive
+                # a single external source keep declaring them as before.
+                freq_hz=float(expected.get("freq_hz", 0.0)),
+                duty_pct=float(expected.get("duty_pct", 0.0)),
                 freq_tol_pct=float(expected.get("freq_tol_pct", 5.0)),
                 duty_tol_pp=float(expected.get("duty_tol_pp", 5.0)),
             ),

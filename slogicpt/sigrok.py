@@ -105,6 +105,21 @@ def _strip_pyinstaller_env(env: dict) -> None:
             env.pop(var, None)
 
 
+# Lines sigrok-cli emits that carry no information about the capture. They are
+# normal on every run of this driver, and the fastest configurations emit them
+# hundreds of times, which buries the lines that matter.
+_NOISE = (
+    "waitformultipleobjectsex failed",
+    "device instance not active, can't set config",
+    "usb link slower than the analyzer",
+)
+
+
+def _is_benign_noise(line: str) -> bool:
+    low = line.lower()
+    return any(n in low for n in _NOISE)
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill the child and its whole process group -- proc.kill() alone leaves
     grandchildren (e.g. `sh -c '...; sleep 30'`) holding the stdout pipe open,
@@ -212,22 +227,41 @@ class SigrokCli:
             log_cb("$ " + " ".join(cmd))
 
         start = time.time()
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, **_popen_kwargs())
+        # Output goes to a FILE and is read afterwards, NOT through a pipe.
+        #
+        # WHY: sigrok-cli draws a progress indicator with carriage returns and no
+        # newlines. A thread reading that pipe line-by-line therefore yields
+        # nothing for the whole capture, the 64 KB pipe buffer fills, and the child
+        # blocks forever writing to it -- the capture then only ends when the
+        # watchdog kills it, which the operator sees as "capture timed out (120s)"
+        # on the fastest configurations. The same trap earlier wedged two matrix
+        # runs in this project, and the fixture loader avoids it the same way.
+        #
+        # A pipe also cannot be given a hard timeout reliably: subprocess.run's
+        # timeout does not fire while a grandchild still holds the write end.
+        self._capture_log = out_file.with_suffix(out_file.suffix + ".log")
+        with open(self._capture_log, "wb") as lf:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                    stdout=lf, stderr=subprocess.STDOUT,
+                                    **_popen_kwargs())
+            with watchdog(proc, timeout_s, cancel) as fate:
+                proc.wait()
+
+        text = ""
+        try:
+            text = self._capture_log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
         wrapped_rate: str | None = None
-        assert proc.stdout is not None
-        with watchdog(proc, timeout_s, cancel) as fate:
-            for line in proc.stdout:
-                line = line.rstrip()
-                if not line:
-                    continue
-                m = re.search(r"wrap to (\S+?Hz)", line, re.IGNORECASE)
-                if m:
-                    wrapped_rate = m.group(1)
-                if log_cb:
-                    log_cb(line)
-            proc.wait()
+        for line in text.splitlines():
+            line = line.rstrip()
+            if not line:
+                continue
+            m = re.search(r"wrap to (\S+?Hz)", line, re.IGNORECASE)
+            if m:
+                wrapped_rate = m.group(1)
+            if log_cb and not _is_benign_noise(line):
+                log_cb(line)
         elapsed = time.time() - start
         if fate.killed_by == "cancel":
             raise CaptureError(t("Capture cancelled"))

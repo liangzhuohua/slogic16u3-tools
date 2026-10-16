@@ -29,6 +29,15 @@ from .profiles import Programmer
 from .sigrok import _popen_kwargs, watchdog
 from .winexec import needs_reparent, run_reparented
 
+try:                                    # 与 fpga.py 用同一个来源判断台架设备
+    import serial.tools.list_ports as list_ports
+except ImportError:                     # pragma: no cover
+    list_ports = None
+
+# 夹具 Tang Nano 的 BL702 和本产品的 Gowin 烧录器共用这个 ID。
+FTDI_VID = 0x0403
+FTDI_PID = 0x6010
+
 EFuse = Literal["locked", "unlocked", "unknown"]
 
 
@@ -209,6 +218,27 @@ def _cable_args(device: str, cable: int) -> list[str]:
     return ["--device", device, "--cable-index", str(cable)]
 
 
+def _read_idcode(out: str) -> tuple[int | None, int | None]:
+    """(expected, actual) IDCODE from a programmer_cli --run 0 transcript.
+
+    `Target Device: GW5AT-60B(0x0001481B)` carries what the tool was TOLD to
+    expect; `ID Code is: 0x...` carries what it actually read off the wire. Both
+    are in the same output, so no table of part numbers is needed here.
+    """
+    exp = re.search(r"Target Device:\s*\S*?\((0x[0-9A-Fa-f]+)\)", out)
+    got = re.search(r"ID Code is:\s*(0x[0-9A-Fa-f]+)", out)
+    return (int(exp.group(1), 16) if exp else None,
+            int(got.group(1), 16) if got else None)
+
+
+def _idcode_matches(out: str) -> bool | None:
+    """True/False if both codes are present, None when they cannot be compared."""
+    exp, got = _read_idcode(out)
+    if exp is None or got is None:
+        return None
+    return exp == got
+
+
 def probe(prog: Programmer, log_cb: Callable[[str], None] = print,
           cancel: threading.Event | None = None) -> ProbeResult:
     """Try each cable candidate until one reads a device, then read its eFuse
@@ -224,16 +254,111 @@ def probe(prog: Programmer, log_cb: Callable[[str], None] = print,
         _, out = _run(prog, [*_cable_args(dev, cable), "--run", "0"], log_cb, cancel)
         if not _device_online(out):
             continue
-        log_cb("[probe] " + t("cable-index {cable} read a device, reading eFuse lock state...").format(cable=cable))
+
+        # A cable that reads SOME device is not good enough: it may be reading a
+        # different chip on the same machine. Measured on the real bench, with the
+        # Tang Nano 9K fixture also plugged in, `--cable-index 4` resolved to the
+        # FIXTURE's JTAG and returned its GW1NR-9C IDCODE 0x1100481B. The probe
+        # accepted that cable ("a device responded"), the eFuse step then failed
+        # with "ID code mismatch", and the whole flow aborted -- while the correct
+        # cable, which did answer on the next index, was never tried.
+        #
+        # --cable-index is an ENUMERATION INDEX, so it moves when USB devices are
+        # plugged or unplugged. Anything that pins a device by index has to verify
+        # it got the right one.
+        match = _idcode_matches(out)
+        if match is False:
+            exp, got = _read_idcode(out)
+            log_cb("[probe] " + t("cable-index {cable} answered, but it is a different "
+                                  "device: read {got:#010x}, expected {exp:#010x} "
+                                  "-- trying the next cable").format(
+                                      cable=cable, got=got or 0, exp=exp or 0))
+            continue
+        if match is None:
+            log_cb("[probe] " + t("cable-index {cable} answered but reported no IDCODE "
+                                  "to compare; using it").format(cable=cable))
+
+        log_cb("[probe] " + t("cable-index {cable} read the right device, reading eFuse lock state...").format(cable=cable))
         _, kout = _run(prog, [*_cable_args(dev, cable), "--keyread"], log_cb, cancel)
         efuse = _efuse_state(kout)
         log_cb("[probe] " + t("Result: external programmer connected, device={dev}, "
                "cable-index={cable}, eFuse={efuse}").format(dev=dev, cable=cable, efuse=efuse))
         return ProbeResult(True, cable, dev, efuse,
                            f"cable-index {cable}, device {dev}, eFuse={efuse}")
-    log_cb("[probe] " + t("Result: no device read on any cable -- external programmer not connected or unpowered"))
+    # 找不到器件时，最有用的信息是"是不是夹具占了位置"。
+    #
+    # 夹具 Tang Nano 9K 的 BL702 和本产品的 Gowin 烧录器共用 FTDI 0403:6010，
+    # 而 programmer_cli 只能按枚举序号选线缆（--scan-cables 的 SN 是 null，
+    # 它没有可用的序列号选择器）。夹具一插上，所有候选序号都落到夹具上，探测
+    # 就报"没读到器件" —— 而操作员看到的只是"烧录器没连或没上电"，很容易去
+    # 查根本没问题的线缆。实测：拔掉夹具后同一条命令立刻读到本产品的 IDCODE。
+    hint = ""
+    if list_ports is not None:
+        try:
+            fixture = [p.device for p in list_ports.comports()
+                       if p.vid == FTDI_VID and p.pid == FTDI_PID
+                       and "BL702" in (p.serial_number or "").upper()]
+        except Exception:                       # noqa: BLE001
+            fixture = []
+        if fixture:
+            hint = t(" The signal-generator fixture is plugged in ({ports}); it "
+                     "shares the FTDI ID 0403:6010 with this product's programmer, "
+                     "so unplug the fixture to flash the board under test."
+                     ).format(ports=", ".join(fixture))
+    log_cb("[probe] " + t("Result: no device read on any cable -- external programmer "
+                          "not connected or unpowered") + hint)
     return ProbeResult(False, None, None, "unknown",
-                       t("No device read on any cable (external programmer not connected?)"))
+                       t("No device read on any cable (external programmer not "
+                         "connected?)") + hint)
+
+
+def _ftdi_serial_for_programmer(log_cb: Callable[[str], None],
+                                cli: list[str] | None = None) -> str | None:
+    """openFPGALoader 该用哪个 FTDI 设备的序列号。
+
+    台架上同时插着夹具 Tang Nano 9K 和本产品的 Gowin 烧录器，**两者都是
+    0403:6010**，`-c ft2232` 不指定设备时会抓第一个 —— 实测那正是 Tang Nano。
+    不指定就会把 DFU 位流写进夹具的 FPGA。
+
+    **必须问 openFPGALoader 自己**，不能用 pyserial 的串口序列号：串口的那个
+    带通道后缀（`2025030317A` / `2025030317B`），而 --ftdi-serial 认的是芯片级的
+    `2025030317`，用带后缀的值它一个设备都匹配不到。
+
+    两者只有序列号能区分，方向是确定的：
+      * 夹具 BL702 的形如 `BL702_FTDI_2038131017A8`，带芯片名；
+      * Gowin 烧录器的形如 `2025030317`，纯数字加通道字母。
+    所以挑**不含 BL702 的那个**，与 fpga.py 挑夹具的判据正好相反。
+    """
+    if not cli:
+        return None
+    try:
+        proc = subprocess.run([*cli, "--scan-usb"], capture_output=True,
+                              text=True, timeout=20, **_popen_kwargs())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # 列格式：Bus device vid:pid probe_type manufacturer serial product
+    #  001 008  0x0403:0x6010 FTDI2232 SIPEED 2025030317 USB Debugger
+    # 所以三组依次是 manufacturer / serial / product。
+    rows = []
+    for line in (proc.stdout or "").splitlines():
+        m = re.search(r"0x0403:0x6010\s+\S+\s+(\S+)\s+(\S+)\s+(.+?)\s*$", line)
+        if m:
+            rows.append((m.group(1), m.group(2), m.group(3).strip()))
+    if not rows:
+        return None
+    others = [r for r in rows if "BL702" not in r[1].upper()]
+    if not others:
+        log_cb("[flash] " + t("Cannot tell the programmer apart from the fixture: "
+                              "every 0403:6010 device reports a BL702 serial"))
+        return None
+    if len(others) > 1:
+        log_cb("[flash] " + t("{n} candidate programmer devices found; using the "
+                              "first").format(n=len(others)))
+    _, serial, product = others[0]
+    log_cb("[flash] " + t("openFPGALoader will target the FTDI device with serial "
+                          "{s} ({p}); the fixture's BL702 is excluded by its "
+                          "serial").format(s=serial, p=product))
+    return serial
 
 
 def _resolve_cable(prog: Programmer, cable_index: int | None,
@@ -265,8 +390,34 @@ def flash(prog: Programmer, cable_index: int | None = None,
         # 自定义烧录命令（如 openFPGALoader，Windows 上比 Gowin exe 快 ~15 倍）：
         # 完整命令自带线缆参数，不依赖 Gowin cli/cable 探测。写入正确性已用
         # Gowin --run 66 (exFlash Verify) 交叉校验过。
-        argv = [a.replace("{image}", str(img))
-                 .replace("{spiaddr}", f"{op.spiaddr:#x}") for a in op.argv]
+        #
+        # {ftdi_serial} 解决一个真实冲突：夹具 Tang Nano 9K 和本产品的 Gowin 烧录器
+        # **都是 FTDI 0403:6010**。openFPGALoader 的 -c ft2232 不指定设备时会抓枚举到
+        # 的第一个 —— 在台架上那正是 Tang Nano，于是 DFU 位流会被往夹具的 FPGA 上写。
+        # 实测：
+        #     --ftdi-serial 2025030317               -> GW5AT-60    （本产品，正确）
+        #     --ftdi-serial BL702_FTDI_2038131017A8  -> GW1N(R)-9C  （Tang Nano 夹具）
+        # 所以这里按序列号显式指定，并且判据和 fpga.py 互为反面、互相印证：
+        # 夹具的 BL702 序列号里带 BL702，烧录器的不带。
+        # op.argv 的首元素在档案加载时已按 resources/ 解析成路径。
+        serial = _ftdi_serial_for_programmer(log_cb, [op.argv[0]])
+        tmpl = [a.replace("{image}", str(img))
+                 .replace("{spiaddr}", f"{op.spiaddr:#x}")
+                 .replace("{ftdi_serial}", serial or "") for a in op.argv]
+        # 取不到序列号时 {ftdi_serial} 会变成空串。**不能只把空串删掉**：那样
+        # `--ftdi-serial` 会去吞下一个参数（实测在台架上变成
+        # `--ftdi-serial --external-flash`，参数错位后烧录必失败）。必须把这个
+        # 开关连同它的值位一起移除，命令退化成不指定序列号（单设备台架可用）。
+        argv: list[str] = []
+        for _i, _a in enumerate(tmpl):
+            if _a == "--ftdi-serial":
+                _nxt = tmpl[_i + 1] if _i + 1 < len(tmpl) else ""
+                if _nxt:
+                    argv.extend([_a, _nxt])
+                continue
+            if _i > 0 and tmpl[_i - 1] == "--ftdi-serial":
+                continue            # 该值位已在上一次迭代一并加入
+            argv.append(_a)
         log_cb("[flash] " + t("Blank-flash (custom command, watchdog {secs}s): ").format(secs=f"{op.timeout_s:.0f}")
                + ' '.join(argv))
         rc, out = _run_argv(argv, op.timeout_s, log_cb, cancel)

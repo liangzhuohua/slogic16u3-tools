@@ -89,7 +89,7 @@ class StepRow(QFrame):
     per-step run button (manual mode)."""
 
     def __init__(self, index: int, step_id: str, label: str, on_run,
-                 on_settings=None):
+                 on_settings=None, req: str = ""):
         super().__init__()
         self.step_id = step_id
         self.label_text = label
@@ -105,6 +105,8 @@ class StepRow(QFrame):
         self.icon.setFixedWidth(20)
         self.icon.setAlignment(Qt.AlignCenter)
         self.name = QLabel(f"{index}. {label}")
+        self.req = QLabel(req)
+        self.req.setStyleSheet("color:#8a6d3b; font-size:11px;")
         self.info = QLabel("")
         self.info.setStyleSheet("color:#777;")
         self.run_btn = QPushButton("▶")
@@ -113,6 +115,8 @@ class StepRow(QFrame):
         self.run_btn.clicked.connect(lambda: on_run(step_id))
         lay.addWidget(self.icon)
         lay.addWidget(self.name, 1)
+        if req:
+            lay.addWidget(self.req)
         lay.addWidget(self.info)
         # optional ⚙ gear (e.g. custom capture params on the sampling step)
         # opens a popup; only shown when the row supplies a handler.
@@ -172,6 +176,9 @@ class ProductionTestGUI(QWidget):
         self.step_rows: dict[str, StepRow] = {}
         self._session_t0: float | None = None
         self._prompt_text = ""
+        self._prompt_flash_on = True
+        self._prompt_timer = QTimer(self)
+        self._prompt_timer.timeout.connect(self._flash_prompt_banner)
         # external JTAG programmer state, driven by the manual 🔄 scan button
         # (None = not scanned yet); separate from USB DFU/APP auto-scan.
         self.programmer_present: bool | None = None
@@ -274,7 +281,9 @@ class ProductionTestGUI(QWidget):
         h.setSpacing(8)
         self.scan_btn = QPushButton("🔄")
         self.scan_btn.setToolTip(
-            t("Scan the external programmer (JTAG) and read the eFuse lock state"))
+            t("Scan the external programmer (JTAG) and read the eFuse lock "
+              "state. The Tang Nano 9K fixture must be UNPLUGGED (it shares "
+              "the FTDI ID with the programmer)."))
         self.scan_btn.setFixedWidth(36)
         self.scan_btn.clicked.connect(self.run_probe)
         h.addWidget(self.scan_btn)
@@ -603,14 +612,26 @@ class ProductionTestGUI(QWidget):
         plan = sequence_plan(p)
         if not plan:
             self.seq_container.addWidget(QLabel(t("Profile defines no steps")))
+        has_fixture = p.signal_source.is_fpga
         for i, (sid, label) in enumerate(plan, start=1):
             # the sampling/capture step carries a ⚙ gear that opens the custom
             # capture-params popup (the old "Test Params" tab).
             on_settings = self._open_params if sid.startswith("capture") else None
-            row = StepRow(i, sid, label, self.run_single_step, on_settings)
+            req = self._step_fixture_req(sid, has_fixture)
+            row = StepRow(i, sid, label, self.run_single_step, on_settings, req)
             self.seq_container.addWidget(row)
             self.step_rows[sid] = row
         self.seq_container.addStretch(1)
+
+    def _step_fixture_req(self, sid: str, has_fixture: bool) -> str:
+        """给步骤行标注它对夹具(Tang Nano 9K)的插拔要求，让操作员一目了然。"""
+        if not has_fixture:
+            return ""
+        if sid.startswith("signal"):
+            return "🔌 " + t("Requires Tang Nano 9K plugged in")
+        if sid.startswith(("blank", "wait", "flash", "switch")):
+            return "🖐 " + t("Requires Tang Nano 9K unplugged")
+        return ""
 
     def _rebuild_aux(self, p: ProductProfile):
         while self.aux_layout.count():
@@ -892,6 +913,15 @@ class ProductionTestGUI(QWidget):
         p = self.profile
         if p is None or self.sigrok is None:
             return
+        if p.signal_source.is_fpga:
+            r = QMessageBox.information(
+                self, t("Full test setup"),
+                t("Steps 1-6 run with the Tang Nano 9K UNPLUGGED.\n"
+                  "Step 7 asks you to PLUG IN the Tang Nano 9K.\n\n"
+                  "Click OK to start."),
+                QMessageBox.Ok | QMessageBox.Cancel)
+            if r != QMessageBox.Ok:
+                return
         self.log_signal.emit(
             "===== " + t("Run Full Test: {name}").format(name=p.display_name) + " =====")
         self._start(pipeline_mod.Pipeline.full_test(
@@ -914,6 +944,43 @@ class ProductionTestGUI(QWidget):
             efuse_key_override=self._override_efuse()),
             reset_rows=False)
 
+    def _fixture_present(self) -> bool:
+        """检测信号发生器夹具(Tang Nano 9K)是否插着。
+
+        夹具的 BL702 和本产品的 Gowin 烧录器共用 FTDI 0403:6010，只有序列号里带
+        'BL702' 的才是夹具。
+        """
+        try:
+            import serial.tools.list_ports as lp
+        except ImportError:
+            return False
+        try:
+            for p in lp.comports():
+                if (p.vid == 0x0403 and p.pid == 0x6010
+                        and "BL702" in (p.serial_number or "").upper()):
+                    return True
+        except Exception:                                    # noqa: BLE001
+            return False
+        return False
+
+    def _ensure_fixture_unplugged_for_probe(self) -> bool:
+        """扫描外置烧录器前，若夹具还插着，提示操作员先拔掉再继续。
+
+        夹具和烧录器共用 0403:6010，而且 programmer_cli 只能按枚举序号选线缆，
+        夹具插着时扫描必失败。这一步用模态框明确引导，避免操作员盲扫。
+        """
+        while self._fixture_present():
+            r = QMessageBox.warning(
+                self, t("Unplug the Tang Nano 9K"),
+                t("The Tang Nano 9K fixture is still connected.\n"
+                  "It shares the FTDI ID with the programmer, so the scan\n"
+                  "cannot find the programmer while the fixture is in.\n\n"
+                  "Please UNPLUG the Tang Nano 9K, then click OK to retry."),
+                QMessageBox.Ok | QMessageBox.Cancel)
+            if r == QMessageBox.Cancel:
+                return False
+        return True
+
     def run_probe(self):
         """Manual 🔄 scan: probe the external JTAG programmer (read-only) and
         read the eFuse lock state on a daemon thread."""
@@ -923,6 +990,8 @@ class ProductionTestGUI(QWidget):
         if p.programmer is None:
             self.log_signal.emit(
                 t("This product has no programmer.toml; no external programmer capability."))
+            return
+        if not self._ensure_fixture_unplugged_for_probe():
             return
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("⏳")
@@ -1145,9 +1214,21 @@ class ProductionTestGUI(QWidget):
     def _on_prompt(self, text: str):
         self._prompt_text = text
         self._set_banner("waiting", f"⏳ {text}")
+        self._prompt_flash_on = True
+        self._prompt_timer.start(600)
 
     def _on_prompt_clear(self):
+        self._prompt_timer.stop()
         self._prompt_text = ""
+
+    def _flash_prompt_banner(self):
+        # 等待/提示状态下让横幅闪烁，确保操作员不会漏看插拔夹具的要求。
+        if not self._prompt_text:
+            return
+        self._prompt_flash_on = not self._prompt_flash_on
+        bg = "#f0c36d" if self._prompt_flash_on else "#fff3cd"
+        self.banner.setStyleSheet(
+            f"background:{bg}; color:#7a5c00; border-radius:6px; padding:2px;")
 
     def _on_manual_switch(self, text: str):
         """模式切换只剩硬件操作时的弹窗提示（非模态：流水线继续等待目标模式

@@ -26,6 +26,11 @@ ZH: dict[str, str] = {
     # header
     "Scan the external programmer (JTAG) and read the eFuse lock state":
         "扫描外置烧录器(JTAG)并读 eFuse 锁定状态",
+    "Scan the external programmer (JTAG) and read the eFuse lock state. "
+    "The Tang Nano 9K fixture must be UNPLUGGED (it shares the FTDI ID with "
+    "the programmer).":
+        "扫描外置烧录器(JTAG)并读 eFuse 锁定状态。需要先拔掉 Tang Nano 9K 夹具"
+        "（它和烧录器共用 FTDI ID）。",
     "Product:": "产品:",
     "Run Full Test": "一键全流程",
     "Stop": "停止",
@@ -107,6 +112,25 @@ ZH: dict[str, str] = {
     "Device must be in DFU mode": "需设备处于 DFU 模式",
     "Device must be in APP mode (finish flashing APP and waiting for APP first)":
         "需设备处于 APP 模式（先完成烧 APP 并等待 APP）",
+    # fixture plug/unplug guidance (scan button & full-test setup)
+    "Requires Tang Nano 9K plugged in": "需插着 Tang Nano 9K",
+    "Requires Tang Nano 9K unplugged": "需拔掉 Tang Nano 9K",
+    "Unplug the Tang Nano 9K": "请拔掉 Tang Nano 9K",
+    "The Tang Nano 9K fixture is still connected.\n"
+    "It shares the FTDI ID with the programmer, so the scan\n"
+    "cannot find the programmer while the fixture is in.\n\n"
+    "Please UNPLUG the Tang Nano 9K, then click OK to retry.":
+        "Tang Nano 9K 夹具仍然连接着。\n"
+        "它和烧录器共用 FTDI ID (0403:6010)，夹具插着时\n"
+        "扫描无法找到烧录器。\n\n"
+        "请先拔出 Tang Nano 9K，再点击确定重试。",
+    "Full test setup": "全流程准备",
+    "Steps 1-6 run with the Tang Nano 9K UNPLUGGED.\n"
+    "Step 7 asks you to PLUG IN the Tang Nano 9K.\n\n"
+    "Click OK to start.":
+        "第 1-6 步运行时需要拔掉 Tang Nano 9K。\n"
+        "第 7 步会提示您插回 Tang Nano 9K。\n\n"
+        "点击确定开始。",
     "Production final-check operation; proceed with caution": "产线终检操作，谨慎执行",
     # switch button
     "This product has no DFU (dfu_pid); cannot switch": "该产品未配置 DFU（dfu_pid），无法切换",
@@ -231,6 +255,50 @@ ZH: dict[str, str] = {
     "Capture done: {n} samples, {sec}s -> {file}": "采样完成: {n} samples, {sec}s -> {file}",
     "{n}/{total} channels passed": "{n}/{total} 通道通过",
 
+    # ---- fixture/protocol steps (pipeline._run_mode_config) --------------
+    "Applied the profile's signal_source.channel_order permutation to this capture":
+        "已按档案的 signal_source.channel_order 重排本次采样",
+    "Signal generator · all {n} patterns": "信号发生器 · 全部 {n} 个模式",
+    "Unpack failed: {e}": "解包失败: {e}",
+    "Capture failed: {e}": "采样失败: {e}",
+    "Signal generator unavailable: {e}": "信号发生器不可用: {e}",
+    "no signal generator": "无信号发生器",
+    "Mode {m} not confirmed: {e}": "模式 {m} 未确认: {e}",
+    "mode not confirmed": "模式未确认",
+    "M{mode} is not ready: {note}": "M{mode} 未就绪: {note}",
+    "not ready": "未就绪",
+    "no serial port after flashing": "烧录后没有串口",
+    "Signal generator on {p}, alive, mode 0": "信号发生器在 {p}，存活，模式 0",
+    "Loading fixture: {name} (run {run})": "烧录夹具: {name} (run {run})",
+    "Fixture bitstream not found: {path}": "夹具比特流不存在: {path}",
+    "Fixture flash FAILED; the capture steps will report SKIP":
+        "夹具烧录失败；后续采样步骤将报 SKIP",
+    "no firmware declared": "未声明固件",
+    "Fixtures · flash signal generator": "夹具 · 烧录信号发生器",
+    "== signal generator: {p} patterns pass/skip, {f} fail ==":
+        "== 信号发生器: {p} 个模式通过/跳过，{f} 个失败 ==",
+    "Capture attempt {a}/{n} failed ({e}); retrying":
+        "采样第 {a}/{n} 次失败（{e}），重试中",
+    "Capture failed: {e}": "采样失败: {e}",
+
+    # The end-of-flow summary that names the wires to go and look at.
+    "---- failing channels ({n}) ----": "---- 不通过的通道（{n} 处）----",
+    "got": "实测",
+    "want": "应为",
+    "ok in group": "组内正常",
+    # ---- 夹具插拔提示（夹具和被测板烧录器共用 FTDI 0403:6010）----
+    "Please UNPLUG the signal-generator fixture (Tang Nano 9K) and wait -- "
+    "it shares the FTDI ID with the board's programmer, so this step cannot "
+    "address the board while the fixture is connected":
+        "请【拔掉】信号发生器夹具（Tang Nano 9K）的 USB，然后等待 —— "
+        "它和被测板的烧录器共用同一个 FTDI 标识，夹具插着时这一步寻址不到被测板",
+    "Please PLUG IN the signal-generator fixture (Tang Nano 9K) and wait -- "
+    "the flow continues by itself":
+        "请【插上】信号发生器夹具（Tang Nano 9K）的 USB，然后等待 —— 流程会自动继续",
+    "Fixture detected ({p}), continuing": "已检测到夹具（{p}），继续",
+    "Fixture unplugged, continuing": "夹具已拔下，继续",
+    "still waiting ({s}s): {m}": "仍在等待（{s} 秒）：{m}",
+
     # ---- programmer.py ---------------------------------------------------
     "Launch failed: {e}": "启动失败: {e}",
     "cancelled": "已取消",
@@ -354,6 +422,28 @@ ZH: dict[str, str] = {
     "RECONFIG sent to {vid:#06x}:{pid:#06x}": "RECONFIG 已发送至 {vid:#06x}:{pid:#06x}",
     "RECONFIG triggered (device offline, control transfer returned {err}, expected)":
         "RECONFIG 已触发（设备离线，控制传输返回 {err}，属预期）",
+    # flasher.py: RECONFIG-based recovery from a hung DFU device
+    "Still no response after reset ({err}); rebooting the device (RECONFIG) "
+    "and retrying…":
+        "复位后仍无响应（{err}）；用 RECONFIG 重启设备后再试一次…",
+    "DFU flash failed: device unresponsive ({err}); power-cycle the device "
+    "(unplug and replug its USB) and retry":
+        "DFU 烧写失败: 设备无响应（{err}）；请给设备断电重启"
+        "（拔掉 USB 再插回）后重试",
+    "RECONFIG to {vid:#06x}:{pid:#06x} reported: {err}":
+        "向 {vid:#06x}:{pid:#06x} 发送 RECONFIG 返回: {err}",
+    "Rebooting the device with RECONFIG ({vid:#06x}:{pid:#06x})…":
+        "正在用 RECONFIG 重启设备（{vid:#06x}:{pid:#06x}）…",
+    "Device did not re-enumerate after RECONFIG":
+        "RECONFIG 后设备没有重新枚举",
+    "Device rebooted straight back into DFU mode":
+        "设备重启后直接回到了 DFU 模式",
+    "Device rebooted into APP mode; sending RECONFIG once more to return to DFU":
+        "设备重启后落到了 APP 模式；再发一次 RECONFIG 切回 DFU",
+    "Device is back in DFU mode after the RECONFIG reboot":
+        "RECONFIG 重启后设备已回到 DFU 模式",
+    "Device did not return to DFU mode after RECONFIG":
+        "RECONFIG 后设备没有回到 DFU 模式",
 
     # ---- env_setup.py (title/hint only; deploy log stays English) --------
     "Linux device permissions (udev)": "Linux 设备权限 (udev)",

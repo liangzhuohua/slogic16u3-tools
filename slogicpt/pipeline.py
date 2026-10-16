@@ -11,6 +11,8 @@ replug") and KEEP polling until the device shows up or the run is cancelled.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 import time
 import traceback
@@ -56,6 +58,22 @@ class StepDef:
     abort_on_fail: bool = True  # capture steps keep going to aid diagnosis
 
 
+# Failures that a second attempt usually clears, because the cause is the previous
+# capture's process rather than the board.
+_TRANSIENT = (
+    "libusb_error_access",
+    "no devices found",
+    "access is denied",
+    "resource busy",
+    "failed to open device",
+)
+
+
+def _looks_transient(message: str) -> bool:
+    low = message.lower()
+    return any(s in low for s in _TRANSIENT)
+
+
 class PipelineAbort(Exception):
     pass
 
@@ -70,6 +88,7 @@ STEP_LABELS: dict[str, str] = {
     "switch_app": "Switch to APP mode",
     "wait_app": "Wait for APP device",
     "switch_dfu": "Switch to DFU mode",
+    "signal:flash": "Fixture · flash signal generator",
 }
 
 
@@ -88,6 +107,23 @@ def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
     plan.append(("flash_app", t(STEP_LABELS["flash_app"])))
     plan.append(("switch_app", t(STEP_LABELS["switch_app"])))
     plan.append(("wait_app", t(STEP_LABELS["wait_app"])))
+
+    # Fixture-based plan. This MUST stay in step with Pipeline._sequence_defs():
+    # the GUI keys its rows on these ids, and a mismatch means the steps exist in
+    # the engine but never appear in the operator's list. That is exactly what
+    # happened when the signal steps were first added -- the engine ran seventeen
+    # steps while the GUI showed six.
+    #
+    # It is also placed after every Gowin programmer step on purpose: running
+    # programmer_cli disturbs the FPGA's SRAM configuration, so the fixture has to
+    # be reloaded after the blank-flash step, not before it.
+    if profile.signal_source.is_fpga:
+        plan.append(("signal:flash", t(STEP_LABELS["signal:flash"])))
+        if profile.plan:
+            plan.append(("signal:all",
+                         t("Signal generator · all {n} patterns").format(
+                             n=len(profile.plan))))
+
     for i, ct in enumerate(profile.capture_tests):
         plan.append((f"capture:{i}",
                      t("Capture {ch}ch@{rate}").format(
@@ -106,6 +142,12 @@ class Pipeline:
         self._thread: threading.Thread | None = None
         self.report_lines: list[str] = []
         self.app_serial: str | None = None   # APP USB SerialNumber (version id)
+        # (mode label, channel text, check, measured, expected, passing channels)
+        self.failures: list[tuple[str, str, str, str, str, str]] = []
+        # 结构化结果（每个「模式 x 配置」一条），供**独立的测试工具**直接渲染界面。
+        # 纯附加：产测引擎自己不读它，行为完全不变。有它就不必去解析 report_lines
+        # 里那些本地化文案（"M4 32ch@200M: PASS (32 ok / 0 fail / 0 skip)"）。
+        self.mode_results: list[dict] = []
 
     # ---- construction helpers -------------------------------------------
 
@@ -122,6 +164,33 @@ class Pipeline:
         defs.append(StepDef("flash_app", t(STEP_LABELS["flash_app"]), self._flash_app))
         defs.append(StepDef("switch_app", t(STEP_LABELS["switch_app"]), self._switch_to_app))
         defs.append(StepDef("wait_app", t(STEP_LABELS["wait_app"]), self._wait_app))
+
+        # --- fixture-based plan -------------------------------------------------
+        # The Tang Nano emits ten patterns. They run as ONE step, not ten.
+        #
+        # Ten separate rows meant ten manual clicks in single-step mode, and each
+        # click re-entered the flow. The patterns are cheap to switch (a serial
+        # write, ~6 ms) and are already one logical test -- "does the analyser
+        # reproduce the generator's patterns" -- so the operator gets one button
+        # and the per-mode detail lands in the log.
+        #
+        # ORDER MATTERS: this comes AFTER every Gowin programmer step above.
+        # Measured: running programmer_cli (even a read-only exFlash Verify)
+        # disturbs the FPGA's SRAM configuration, after which the fixture stops
+        # answering on its serial port entirely.
+        if self.profile.signal_source.is_fpga:
+            defs.append(StepDef("signal:flash",
+                                t(STEP_LABELS["signal:flash"]),
+                                self._signal_flash, abort_on_fail=False))
+            if self.profile.plan:
+                defs.append(StepDef(
+                    "signal:all",
+                    t("Signal generator · all {n} patterns").format(
+                        n=len(self.profile.plan)),
+                    self._run_all_modes, abort_on_fail=False))
+
+        # Legacy path: a profile with no [[plan]] still drives an external source
+        # and is checked the old way.
         for i, ct in enumerate(self.profile.capture_tests):
             defs.append(StepDef(
                 f"capture:{i}",
@@ -248,7 +317,39 @@ class Pipeline:
             self._log(t("Flow exception:") + "\n" + traceback.format_exc())
             self.report_lines.append(t("Flow exception, see log for details"))
         finally:
+            # Release the fixture's serial port. Without this, a single-step run
+            # leaves the port open and the NEXT step cannot open it:
+            #   PermissionError(13, 'Access is denied') on COM30
+            # which the operator sees as "no signal generator" from then on.
+            self._signal_close()
             self.cb.on_user_prompt_clear()
+
+            # End with "which wire, in which mode" rather than leaving the operator
+            # to find it among the per-mode lines and the capture noise.
+            #
+            # Every failing verdict was recorded as it happened, with the channel
+            # text the check itself produced: a per-channel failure names one input
+            # ("CH7"), while a structured one names the wires it spans ("CH4..CH7"
+            # for an SPI master, "CH24/CH25" for I2C). That is the unit the operator
+            # has to go and look at, so it is what the summary leads with.
+            if self.failures:
+                lines = [t("---- failing channels ({n}) ----").format(
+                    n=len(self.failures))]
+                for mode, where, kind, got, want, ok_in in self.failures:
+                    lines.append("  %-14s %-8s %s" % (where, kind, mode))
+                    lines.append("      %-6s %s" % (t("got"), got))
+                    lines.append("      %-6s %s" % (t("want"), want))
+                    if ok_in:
+                        # A group verdict names several wires, and some of them
+                        # usually measured fine. Without this line "CH24/CH25 i2c
+                        # FAIL" reads as two suspect wires; with it, the reader
+                        # sees CH24 passed its own 100 kHz check and only CH25 is
+                        # actually in question.
+                        lines.append("      %-6s %s" % (t("ok in group"), ok_in))
+                for ln in lines:
+                    self._log(ln)
+                self.report_lines.extend(lines)
+
             lines = list(self.report_lines)
             if self.app_serial:
                 lines.insert(0, f"APP SN: {self.app_serial}")
@@ -259,14 +360,113 @@ class Pipeline:
     def _log(self, msg: str) -> None:
         self.cb.on_log(msg)
 
+    def _note_mode_result(self, entry, *, config: str = "-", ok: bool = True,
+                          passed: int = 0, failed: int = 0, skipped: int = 0,
+                          verdicts=None, note: str = "",
+                          skip: bool = False) -> None:
+        """追加一条结构化结果到 `mode_results`（供独立测试工具渲染界面）。
+
+        纯附加信息：产测引擎自己不读它，行为与判定完全不变。
+        """
+        self.mode_results.append({
+            "mode": entry.mode,
+            "mode_label": entry.label,
+            "config": config,
+            "ok": bool(ok),
+            "skip": bool(skip),
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "verdicts": list(verdicts or []),
+            "note": note,
+        })
+
     _cable_index = None         # external-programmer cable index (from the GUI probe)
     _image_override = None      # GUI 会话级：覆盖 DFU 镜像路径
     _efuse_key_override = None  # GUI 会话级：覆盖 eFuse 密钥路径
+
+    # ---- fixture USB presence -------------------------------------------
+
+    def _fixture_ports(self) -> list[str]:
+        """夹具 Tang Nano 的串口（按 BL702 序列号认出）。
+
+        夹具的 BL702 和本产品的 Gowin 烧录器共用 FTDI 0403:6010，只有序列号能
+        区分 —— 夹具的带 BL702，烧录器的不带。
+        """
+        try:
+            import serial.tools.list_ports as lp
+        except ImportError:
+            return []
+        out = []
+        try:
+            for p in lp.comports():
+                if (p.vid == 0x0403 and p.pid == 0x6010
+                        and "BL702" in (p.serial_number or "").upper()):
+                    out.append(p.device)
+        except Exception:                       # noqa: BLE001
+            return []
+        return out
+
+    def _ensure_fixture(self, plugged: bool) -> bool:
+        """确保夹具处于插入 / 拔出的状态，需要时提示操作员并等待。
+
+        为什么需要这个：`programmer_cli` 选线缆只能按**枚举序号**（--scan-cables
+        的 SN 是 null），而夹具的 BL702 和本产品的烧录器都是 FTDI 0403:6010。
+        夹具一插上，所有候选序号都落到夹具上，eFuse 那一步就报 IDCODE 不符并中止；
+        而序号还会随着任何 USB 插拔而移动，所以它无法靠配置绕开。
+
+        实测：夹具插着时 --cable-index 0..9 无一能读到本产品；拔掉后同一条命令
+        立刻读到 0x0001481B。
+
+        这里不弹"请点继续"，而是**直接轮询等到操作员真的做完** —— 少一次点击，
+        也不会出现"提示还在、人已经点过了"的错位。
+        """
+        want = plugged
+        ports = self._fixture_ports()
+        if bool(ports) == want:
+            return True
+
+        if want:
+            msg = t("Please PLUG IN the signal-generator fixture (Tang Nano 9K) "
+                    "and wait -- the flow continues by itself")
+        else:
+            msg = t("Please UNPLUG the signal-generator fixture (Tang Nano 9K) "
+                    "and wait -- it shares the FTDI ID with the board's "
+                    "programmer, so this step cannot address the board while the "
+                    "fixture is connected")
+        self._log("[fixture] " + msg)
+        self.cb.on_user_prompt(msg)
+        try:
+            waited = 0.0
+            while not self.cancel.is_set():
+                ports = self._fixture_ports()
+                if bool(ports) == want:
+                    self._log("[fixture] " + (
+                        t("Fixture detected ({p}), continuing").format(
+                            p=", ".join(ports)) if want else
+                        t("Fixture unplugged, continuing")))
+                    return True
+                time.sleep(0.5)
+                waited += 0.5
+                # 每 30 秒重述一次，避免操作员以为卡住了。用 int(waited) 时
+                # waited=0.5 会让 int()=0 也满足 %30==0，于是刚提示完就马上又打
+                # 一条 "still waiting (0s)"，看起来像出错。
+                if waited >= 30 and int(waited) % 30 == 0:
+                    self._log("[fixture] " + t("still waiting ({s}s): {m}").format(
+                        s=int(waited), m=msg))
+            return False
+        finally:
+            self.cb.on_user_prompt_clear()
 
     def _efuse_ensure(self) -> bool:
         """烧空板前置：加密 DFU 位流须以 eFuse 中的 AES 密钥启动（write），
         lock 防止密钥被读出。已锁 -> 密钥已在，跳过；未锁 -> 写入并锁定
         （不可逆），随后回读锁定位校验。"""
+        # 必须先让夹具让开：这一步走 programmer_cli，而它只能按枚举序号选线缆，
+        # 夹具插着时所有序号都落到夹具上（详见 _ensure_fixture）。
+        if not self._ensure_fixture(False):
+            self.report_lines.append(t("eFuse write-lock") + ": FAIL")
+            return False
         prog = self.profile.programmer
         state, cable = programmer_mod.efuse_state(
             prog, self._cable_index, log_cb=self._log, cancel=self.cancel)
@@ -311,6 +511,12 @@ class Pipeline:
     def _flash_blank(self) -> bool:
         op = self.profile.programmer.flash
         img = self._image_override if self._image_override is not None else op.image
+        # 这一步本身用 --ftdi-serial 选设备、夹具插着也没事，但如果上一步是
+        # eFuse（要拔夹具），这里再确认一次可以让"跳过 eFuse"的档案也走到同样的
+        # 提示 —— 反正夹具已经在外面时它直接返回，不打扰操作员。
+        if not self._ensure_fixture(False):
+            self.report_lines.append(t("Blank-flash DFU image") + ": FAIL")
+            return False
         self._log(f"[criteria] blank-flash: image={img.name} @ {op.spiaddr:#x}; "
                   f"success = openFPGALoader read-back verify OK (see its decision "
                   f"line), or Gowin 'Finished' with no Error")
@@ -444,7 +650,8 @@ class Pipeline:
                 vid=self.profile.vid, pid=self.profile.dfu_pid,
                 addr=self.profile.app_flash_addr, firmware=fw,
                 verify=self.profile.verify_after_flash, ota=self.profile.ota,
-                log_cb=self._log, cancel=self.cancel)
+                log_cb=self._log, cancel=self.cancel,
+                app_pid=self.profile.app_pid)
             self.report_lines.append(t("DFU flash") + f": OK ({fw})")
             return True
         except flasher.FlashError as e:
@@ -540,6 +747,367 @@ class Pipeline:
             + t("{n}/{total} channels passed").format(
                 n=sum(v.ok for v in verdicts), total=len(verdicts)) + ")")
         return ok
+
+    # =======================================================================
+    # Fixture signal source (Tang Nano 9K)
+    # =======================================================================
+
+    def _signal_source(self):
+        """Open the fixture once and keep it open.
+
+        Keeping the port open matters: the port round trip is about 6 ms, while
+        restarting a helper process per mode change cost ~1.7 s. Across ten modes
+        that is the difference between one second and seventeen.
+        """
+        if getattr(self, "_signal", None) is not None:
+            return self._signal
+        from .fpga import SignalSource
+        ss = self.profile.signal_source
+        src = SignalSource(port=None if ss.serial == "auto" else ss.serial,
+                           baud=ss.baud, settle_ms=ss.settle_ms,
+                           reply_timeout_ms=ss.reply_timeout_ms)
+        src.open()
+        self._signal = src
+        return src
+
+    def _signal_close(self) -> None:
+        src = getattr(self, "_signal", None)
+        if src is not None:
+            try:
+                src.close()
+            except Exception:                       # noqa: BLE001
+                pass
+            self._signal = None
+
+    def _signal_flash(self) -> bool:
+        """Load the fixture bitstream, then prove the fixture is alive.
+
+        Done here rather than as a separate manual step because the FPGA loses its
+        SRAM configuration on any small power disturbance -- re-seating a probe is
+        enough -- and when it does, every pin floats and the analyser reads all
+        channels high. Reflashing at the start of every run makes the fixture state
+        deterministic instead of a source of mystery failures later.
+        """
+        from . import fixture
+        ss = self.profile.signal_source
+        if ss.firmware is None:
+            self._log(t("signal_source.firmware is not declared"))
+            self.report_lines.append("fixture: SKIP (" + t("no firmware declared") + ")")
+            return False
+
+        # 夹具要插回来。前面烧被测板的那几步要求把它拔掉（programmer_cli 只能按
+        # 枚举序号选线缆，而夹具和烧录器共用 FTDI 0403:6010），这里把它要回来。
+        if not self._ensure_fixture(True):
+            self.report_lines.append("fixture: FAIL")
+            return False
+
+        ok = fixture.flash(ss.firmware, ss.firmware_run, self._log,
+                           cancel=self.cancel)
+        if not ok:
+            self._log(t("Fixture flash FAILED; the capture steps will report SKIP"))
+            self.report_lines.append(
+                "fixture: FAIL (" + t("could not load the signal generator") + ")")
+            return False
+        # The FPGA comes up in M0, so the bitstream can be checked immediately.
+        self._signal = None            # force a fresh open; the port may be new
+        try:
+            self._signal_source()
+        except Exception as e:                      # noqa: BLE001
+            self._log(t("Signal generator not reachable after flashing: {e}").format(e=e))
+            self.report_lines.append(
+                "fixture: FAIL (" + t("no serial port after flashing") + ")")
+            return False
+        self._log(t("Signal generator on {p}, alive, mode 0").format(
+            p=getattr(self._signal, "port", "?")))
+        self.report_lines.append("fixture: PASS")
+        return True
+
+    def _run_all_modes(self) -> bool:
+        """Every pattern mode in one step.
+
+        Runs all of them even if an early one fails: the modes are independent
+        and a fault in one pattern must not hide the state of the other nine.
+        A single line per mode goes into the operator report, so the summary
+        still reads as ten results rather than one aggregate.
+        """
+        summary_before = len(self.report_lines)
+        all_ok = True
+        for entry in self.profile.plan:
+            if self.cancel.is_set():
+                break
+            before = len(self.report_lines)
+            ok = self._run_mode(entry)
+            all_ok = all_ok and ok
+            # Keep the per-mode PASS/FAIL/SKIP line, drop the per-config noise
+            # that _run_mode_config already put in the log.
+            if len(self.report_lines) == before:
+                self.report_lines.append(
+                    "M%d %s: %s" % (entry.mode, entry.label,
+                                    t("PASS") if ok else t("FAIL")))
+        passing = sum(1 for ln in self.report_lines[summary_before:]
+                      if ": PASS" in ln or ": SKIP" in ln)
+        failing = sum(1 for ln in self.report_lines[summary_before:]
+                      if ": FAIL" in ln)
+        self._log(t("== signal generator: {p} patterns pass/skip, {f} fail ==")
+                  .format(p=passing, f=failing))
+        return all_ok
+
+    def _run_mode(self, entry) -> bool:
+        """Run one pattern mode at every configured channel count and rate."""
+        from . import checks, patterns, waveform
+
+        ss = self.profile.signal_source
+        if not entry.ready:
+            self._log(t("M{mode} is not ready: {note}").format(
+                mode=entry.mode, note=entry.note or "-"))
+            self.report_lines.append(
+                "M%d %s: SKIP (%s)" % (entry.mode, entry.label,
+                                       entry.note or t("not ready")))
+            self._note_mode_result(entry, note=entry.note or t("not ready"),
+                                   skip=True)
+            return True                       # SKIP is not a failure
+
+        try:
+            src = self._signal_source()
+        except Exception as e:                      # noqa: BLE001
+            self._log(t("Signal generator unavailable: {e}").format(e=e))
+            self.report_lines.append(
+                "M%d %s: SKIP (%s)" % (entry.mode, entry.label,
+                                       t("no signal generator")))
+            self._note_mode_result(entry, note=t("no signal generator"),
+                                   skip=True)
+            return True                       # absence must not read as a DUT failure
+
+        try:
+            src.select_mode(entry.mode)
+        except Exception as e:                      # noqa: BLE001
+            self._log(t("Mode {m} not confirmed: {e}").format(m=entry.mode, e=e))
+            self.report_lines.append(
+                "M%d %s: FAIL (%s)" % (entry.mode, entry.label, t("mode not confirmed")))
+            self._note_mode_result(entry, ok=False, failed=1,
+                                   note=t("mode not confirmed"))
+            return False
+
+        self._log(t("== M{mode} {label} ==").format(mode=entry.mode, label=entry.label))
+        all_ok = True
+        for cfg in entry.configs:
+            ok = self._run_mode_config(entry, cfg, ss, checks, patterns, waveform)
+            all_ok = all_ok and ok
+            if self.cancel.is_set():
+                break
+        return all_ok
+
+    def _run_mode_config(self, entry, cfg, ss, checks, patterns, waveform) -> bool:
+        """One mode at one channel count, at the default and any group thresholds.
+
+        Two passes when the profile declares threshold groups: the fixture mixes
+        3.3 V and 1.8 V logic, and measurement showed no single input threshold
+        serves both. Channels outside the groups take their verdict from the
+        default pass; the grouped channels take theirs from the pass at their own
+        threshold.
+        """
+        label = "%dch@%s" % (cfg.channels, format_rate(cfg.samplerate_hz))
+        # The sample cap matters: a 20 ms window at 1400 MSa/s would ask for 28 M
+        # samples (14 MB), which the 5 Gbps link cannot drain at the requested rate
+        # and which buys nothing -- 8 M samples is still 5.7 ms, enough for the
+        # slowest signal M0 carries. The EFFECTIVE window is what the model needs,
+        # because a channel slower than it must be reported as SKIP rather than
+        # failed for having no complete period in the capture.
+        n_samples = min(int(cfg.samplerate_hz * cfg.window_ms / 1000.0),
+                        cfg.max_samples)
+        n_samples = max(n_samples, 1024)
+        eff_window_s = n_samples / float(cfg.samplerate_hz)
+        self._log(t("-- {label} ({ms} ms window, {n} samples) --").format(
+            label=label, ms=round(eff_window_s * 1000, 1), n=n_samples))
+
+        passes = [(self.profile.voltage_threshold_v, None)]
+        if entry.mode in patterns.NEEDS_THRESHOLD_GROUPS:
+            for g in self.profile.threshold_groups:
+                passes.append((g.voltage_threshold_v, g))
+
+        verdicts_by_channel: dict[int, object] = {}
+        extra: dict[str, object] = {}
+        for vth, group in passes:
+            ok, verdicts = self._capture_and_check(
+                entry, cfg, vth, str(n_samples), eff_window_s,
+                checks, patterns, waveform)
+            if not ok and verdicts is None:
+                self.report_lines.append("M%d %s @%.1fV: FAIL (%s)"
+                                         % (entry.mode, label, vth, t("capture failed")))
+                return False
+            tag = "" if group is None else " [%s @%.1fV]" % (group.label, vth)
+            for v in verdicts:
+                if v.channel < 0:
+                    # A structured verdict: one SPI master, one I2C transaction,
+                    # the rotation check. These are NOT per-channel -- an SPI
+                    # instance spans SCLK plus three more wires -- so they cannot
+                    # be bucketed by channel number and must not be deduplicated
+                    # by one.
+                    #
+                    # Keyed by kind, so the LAST pass wins. The passes run
+                    # slowest-threshold last (default 1.5 V, then each threshold
+                    # group), which means for M4 the 0.9 V pass supplies the
+                    # protocol verdicts. That is the right way round: at 1.5 V the
+                    # bank-3 wires (CH20..CH25) are marginal, and measured, spi5's
+                    # MISO decoded 0x0F68 instead of 0x0F69 and I2C returned
+                    # garbage. At 0.9 V both are exact. Keeping both passes would
+                    # instead report the same instance twice, once PASS and once
+                    # FAIL.
+                    #
+                    # `continue` 很关键：这些判定**只能**进 extra。以前它们同时被
+                    # 塞进 verdicts_by_channel[-1]，于是 final 里出现两次 ——
+                    # 失败计数翻倍、报告里同一条失败重复两行（实测 M0 的轮转判定
+                    # 就报成 "0 ok / 2 fail"，其实只有 1 条）。
+                    v.channel_text = v.channel_text or v.kind
+                    # 合并规则：**哪一轮的阈值真正管着这条判定名下的那些通道，
+                    # 就用哪一轮。**
+                    #
+                    #   默认轮（1.5 V）永远有资格；
+                    #   阈值组轮只在该判定的通道落在该组里时才有资格覆盖。
+                    #
+                    # M4 的 I2C 在 CH24/CH25（bank 3，1.8 V）-> 0.9 V 那轮覆盖它，
+                    # 正确：1.5 V 下 bank 3 是勉强电平，实测 spi5 的 MISO 解成
+                    # 0x0F68（应为 0x0F69）、I2C 直接是垃圾。
+                    #
+                    # M5 的窄脉冲判定在 CH2~CH4（3.3 V 那侧）-> 0.9 V 那轮**不许**
+                    # 覆盖它，否则会把一个本该在 1.5 V 下判的检查改用坏阈值来判。
+                    # 以前是"最后一轮永远赢"，M0 在 0.9 V 下的轮转判定就是这么被
+                    # 弄坏的（1.5 V 通过、0.9 V 失败）。
+                    if group is None or (set(v.channels) & set(group.channels)):
+                        extra[v.kind] = v
+                    continue
+                if group is None:
+                    verdicts_by_channel.setdefault(v.channel, v)
+                elif v.channel in group.channels:
+                    v.detail = (v.detail + tag).strip()
+                    verdicts_by_channel[v.channel] = v
+
+        final = ([v for _c, v in sorted(verdicts_by_channel.items())]
+                 + list(extra.values()))
+        good, passed, failed, skipped = checks.summarise(final)
+        self._note_mode_result(entry, config=label, ok=good, passed=passed,
+                               failed=failed, skipped=skipped, verdicts=final)
+        by_ch = {v.channel: v for v in final}
+        for v in final:
+            if v.ok is False:
+                where = (v.channel_text if v.channel < 0
+                         else "CH%d" % v.channel)
+                self._log("     %-12s %-8s got %-24s want %-24s %s"
+                          % (where, v.kind, v.measured, v.expected, v.detail[:60]))
+                # For a group verdict, spell out which of its wires did pass, so
+                # the reader is not left guessing across all of them.
+                ok_in = ""
+                if v.channels:
+                    good_ones = [c for c in v.channels
+                                 if by_ch.get(c) is not None
+                                 and by_ch[c].ok is True]
+                    if good_ones:
+                        ok_in = ", ".join("CH%d" % c for c in good_ones)
+                self.failures.append((
+                    "M%d %s" % (entry.mode, entry.label), where, v.kind,
+                    v.measured, v.expected, ok_in))
+        self._log(t("   {label}: {verdict}  ({p} ok / {f} fail / {s} skip)").format(
+            label=label, verdict="PASS" if good else "FAIL",
+            p=passed, f=failed, s=skipped))
+        self.report_lines.append(
+            "M%d %s: %s (%d ok / %d fail / %d skip)"
+            % (entry.mode, label, "PASS" if good else "FAIL", passed, failed, skipped))
+        return good
+
+    def _capture_retrying(self, cfg, vth, n_samples, out_file, label,
+                          attempts: int = 3):
+        """Capture, retrying the failures that are known to be transient.
+
+        `LIBUSB_ERROR_ACCESS` / "No devices found" is what the next capture sees
+        after a previous sigrok-cli was killed: the old process has not released
+        the USB device yet, or a stray one is still holding it. The very next
+        attempt normally succeeds, but without a retry the operator sees a hard
+        FAIL and -- worse -- that 120 s timeout cascades into the following
+        captures. Measured on the real fixture: one M4 run failed two configs this
+        way, all of which passed on a rerun.
+
+        Real failures (a genuinely absent device, a bad samplerate) still surface:
+        they fail every attempt, and the last error is what gets reported.
+        """
+        last = None
+        for attempt in range(1, attempts + 1):
+            if self.cancel.is_set():
+                return None
+            try:
+                return self.sigrok.capture(
+                    driver=self.profile.driver, channels=cfg.channels,
+                    samplerate_hz=cfg.samplerate_hz, samples=n_samples,
+                    voltage_threshold_v=vth, out_file=out_file,
+                    timeout_s=self.profile.timeouts.capture_s,
+                    log_cb=self._log, cancel=self.cancel)
+            except CaptureError as e:
+                last = e
+                transient = _looks_transient(str(e))
+                if attempt < attempts and transient and not self.cancel.is_set():
+                    self._log(t("Capture attempt {a}/{n} failed ({e}); retrying")
+                              .format(a=attempt, n=attempts, e=e))
+                    self._kill_stray_sigrok()
+                    time.sleep(1.5)
+                    continue
+                break
+        self._log(t("Capture failed: {e}").format(e=last))
+        self._log("  [" + label + "]")
+        return None
+
+    @staticmethod
+    def _kill_stray_sigrok() -> None:
+        """Clear any sigrok-cli that outlived its capture.
+
+        `taskkill /IM sigrok-cli*.exe` matches nothing on Windows: the image name
+        is truncated to 15 characters ("sigrok-cli"), and the bundled binary has a
+        longer name. A stray then holds the USB device and every later capture
+        fails with LIBUSB_ERROR_ACCESS -- a cascade that killed two full runs of
+        this project's own matrix before the pattern was found.
+        """
+        if os.name != "win32":
+            return
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "sigrok-cli-windows-x86_64.exe"],
+                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "sigrok-cli.exe"],
+                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        except OSError:
+            pass
+
+    def _capture_and_check(self, entry, cfg, vth, n_samples, eff_window_s,
+                           checks, patterns, waveform):
+        """Capture at one threshold and return (ok, verdicts|None)."""
+        out_file = OUTPUT_DIR / ("%s_m%d_%dch_%s_%.1fV.bin"
+                                 % (self.profile.id, entry.mode, cfg.channels,
+                                    format_rate(cfg.samplerate_hz), vth))
+        result = self._capture_retrying(
+            cfg, vth, n_samples, out_file,
+            "%s M%d %dch@%s %.1fV" % (self.profile.id, entry.mode, cfg.channels,
+                                      format_rate(cfg.samplerate_hz), vth))
+        if result is None:
+            return False, None
+
+        try:
+            chans = waveform.load_capture_file(result.out_file, cfg.channels,
+                                               result.unitsize)
+            # Undo the harness permutation declared in the product profile, if any.
+            # Identity by default, so a correctly wired fixture is unaffected.
+            order = self.profile.signal_source.channel_order
+            if order and list(order[:cfg.channels]) != list(range(cfg.channels)):
+                chans = waveform.apply_channel_order(chans, order)
+                self._log(t("Applied the profile's signal_source.channel_order "
+                            "permutation to this capture"))
+        except Exception as e:                      # noqa: BLE001
+            self._log(t("Unpack failed: {e}").format(e=e))
+            return False, None
+
+        expects = patterns.expected(entry.mode, cfg.channels,
+                                    cfg.samplerate_hz,
+                                    window_s=eff_window_s)
+        verdicts = checks.evaluate(entry.mode, chans, expects, cfg.samplerate_hz)
+        return True, verdicts
 
 
 if __name__ == "__main__":

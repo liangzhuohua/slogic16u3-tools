@@ -50,6 +50,21 @@ _CNW = 0x08000000            # CREATE_NO_WINDOW
 _STILL_ACTIVE = 259
 
 
+def _hidden_startupinfo():
+    """STARTUPINFO：要求子进程的窗口隐藏。
+
+    只给 CREATE_NO_WINDOW **不足以**隐藏 powershell —— 打包成 --windowed 后实测
+    仍会闪出一个 powershell 窗口（每跑一次 WMI 调用闪一下）。再叠加
+    STARTF_USESHOWWINDOW + SW_HIDE 才真正不显示。非 Windows 返回 None。
+    """
+    if sys.platform != "win32":
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return si
+
+
 def needs_reparent() -> bool:
     """True only when we are the packaged (frozen) exe on Windows -- the one
     case where a native child inherits the poisoned ancestry."""
@@ -59,7 +74,8 @@ def needs_reparent() -> bool:
 def _taskkill(pid: int) -> None:
     try:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, creationflags=_CNW)
+                       capture_output=True, creationflags=_CNW,
+                       startupinfo=_hidden_startupinfo())
     except OSError:
         pass
 
@@ -100,7 +116,8 @@ def _wmi_create(cmdline: str, work: Path) -> tuple[int | None, str]:
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=30, creationflags=_CNW)
+            timeout=30, creationflags=_CNW,
+            startupinfo=_hidden_startupinfo())
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, f"powershell/WMI invocation failed: {e}"
     text = ((r.stdout or "") + (r.stderr or "")).strip()
@@ -127,12 +144,33 @@ def run_reparented(argv: list[str], cwd: str | None, timeout_s: float,
             body.append(f'cd /d "{cwd}"')
         body.append(f'{subprocess.list2cmdline([str(a) for a in argv])} '
                     f'> "{out}" 2>&1')
-        body.append(f'echo %errorlevel%> "{rcf}"')
+        # 注意 `%errorlevel%` 和 `>` 之间**必须有空格**：写成 `echo %errorlevel%>`
+        # 时展开成 `echo 7> "rc.txt"`，cmd 会把 `7>` 当成"重定向句柄 7"，于是
+        # rc.txt 是空的、上层永远拿到 rc=-1（实测两种创建方式都一样）。
+        # 这个 bug 会让依赖 rc 的判据（_write_ok：Gowin 烧录/切换）恒判失败。
+        body.append(f'echo %errorlevel% > "{rcf}"')
         # cmd reads a .bat in the ANSI code page; paths are ASCII in practice
         bat.write_text("\r\n".join(body) + "\r\n", encoding="mbcs",
                        errors="replace")
 
-        pid, diag = _wmi_create(f'cmd.exe /c ""{bat}""', work)
+        # 用 wscript + VBS 以**隐藏窗口**启动 bat。
+        #
+        # 为什么不能直接让 WMI 创建 `cmd.exe /c bat`：cmd.exe 是控制台程序，而 WMI
+        # 的 Win32_Process.Create 是在调用者的交互桌面上建进程 —— 于是每跑一次就弹
+        # 出一个命令窗口再消失。打包成 --windowed 后没有父控制台可继承，这个现象尤
+        # 其明显（实测：自动检测每 2.5 秒跑一次 programmer_cli，屏幕上就一直闪黑框）。
+        #
+        # wscript.exe 是 GUI 子系统程序，自己不产生控制台；VBS 里用
+        # WshShell.Run(cmd, 0, True) 的 0 = 窗口隐藏，于是全程无窗口。
+        vbs = work / "run.vbs"
+        inner = f'cmd.exe /c ""{bat}""'
+        vbs.write_text(
+            'Set sh = CreateObject("WScript.Shell")\r\n'
+            'rc = sh.Run("' + inner.replace('"', '""') + '", 0, True)\r\n'
+            'WScript.Quit rc\r\n',
+            encoding="mbcs", errors="replace")
+
+        pid, diag = _wmi_create(f'wscript.exe //nologo "{vbs}"', work)
         if pid is None:
             log_cb("[programmer] " + f"WMI launch failed: {diag}")
             return -1, ""

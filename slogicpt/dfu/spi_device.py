@@ -48,15 +48,24 @@ class SPIDevice:
         self.usb.write(packet.serialize(), self.timeout)
         return self.usb.read(nbytes, self.timeout)
 
-    def _assert_idle(self) -> None:
+    def _assert_idle(self, timeout_s: float = 5.0) -> None:
         """校验桥接器完成一次传输后处于可继续状态：
         SPIActive=0（无进行中的传输）且 RXEMPTY=1（RX FIFO 已空——残留会让后续
-        读取错位并最终 Overflow）。StatusRegister 本身不含错误位（溢出/欠载等错误在
-        InterruptStatusRegister），TX FIFO 占用计数是瞬时值：36 字节页写入时 TX FIFO
-        尚未排空即被采样属正常，故不作错误判据（旧代码硬比 0x00404000 会误判失败）。"""
-        st = self.read_register().StatusRegister
-        assert st.SPIActive == 0 and st.RXEMPTY == 1, \
-            f"SPI 桥接器状态异常: 0x{st.value:08X}"
+        读取错位并最终 Overflow）。用**轮询等待**而非立即硬断言：刚编程完的写事务
+        （PP/WREN/WRDI）会短暂保持 SPIActive=1，因为 TX FIFO 仍在排空、数据还在
+        往外移，这是正常瞬时状态。立即断言会按 USB 往返时序间歇性误报失败（实测
+        会在 23%、39% 等不同进度挂掉）。只有等待超时仍未回到空闲，才真报错
+        （总线挂死/通信异常）。StatusRegister 本身不含错误位（溢出/欠载等错误在
+        InterruptStatusRegister），TX FIFO 占用计数是瞬时值，故不作错误判据。"""
+        import time
+        t0 = time.time()
+        while True:
+            st = self.read_register().StatusRegister
+            if st.SPIActive == 0 and st.RXEMPTY == 1:
+                return
+            if time.time() - t0 > timeout_s:
+                raise AssertionError(f"SPI 桥接器状态异常: 0x{st.value:08X}")
+            time.sleep(0.002)
 
     def reset(self) -> bool:
         config = SPIConfigRegister()

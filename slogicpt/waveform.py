@@ -53,6 +53,31 @@ def load_capture_file(path: Path, num_channels: int, unitsize: int) -> np.ndarra
                             num_channels, unitsize)
 
 
+def apply_channel_order(channels: np.ndarray,
+                        order: tuple[int, ...] | list[int]) -> np.ndarray:
+    """Return the capture with the wiring permutation undone.
+
+    `order[g]` is the analyser input that generator channel g reaches, so the
+    corrected array is `captured[order[g]]` at row g.
+
+    This exists because the harness is hand-wired and the two 16-channel probe
+    groups can end up crossed -- measured on the real fixture as generator
+    CH0..CH7 arriving at analyser D16..D23 and CH16..CH23 at D0..D7. The
+    alternative is rewiring, which is the right long-term fix; until the cable can
+    be replaced, this keeps the test meaningful.
+
+    It is deliberately data, in the product profile, and not a constant in code:
+    a permutation that silently disagrees with the harness turns a wiring fault
+    into a PASS, so it has to be visible where the rest of the product is
+    described. Nothing here validates it -- M0 and M4 do, because the rotation
+    order and the per-instance SPI words are both wrong under a bad permutation.
+    """
+    order = list(order)
+    if len(order) < channels.shape[0]:
+        return channels
+    return channels[np.asarray(order[:channels.shape[0]], dtype=int)]
+
+
 def detect_pwm_freq(samples: np.ndarray, sample_rate: float) -> float | None:
     edges = np.where((samples[:-1] == 0) & (samples[1:] == 1))[0]
     if len(edges) < 2:

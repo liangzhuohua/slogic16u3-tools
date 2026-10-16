@@ -47,7 +47,15 @@ timeout_s = 600                    # 烧录专用看门狗：顶层 timeout_s=30
 # （回显 "flash chip unknown"），此时它即使擦+写全过也会硬返回非零退出码，故不能只
 # 认退出码。带 --verify 后它回读比对（Reading→Done），programmer.py 的
 # _openfpga_flash_ok 以"校验通过"为准判成功，既解掉误判、又不放行没写对的板。
+# --ftdi-serial {ftdi_serial}：**必须有**。台架上除本产品的 Gowin 烧录器外，还插着
+# 夹具 Tang Nano 9K，而**两者都是 FTDI 0403:6010**。openFPGALoader 的 -c ft2232 不指定
+# 设备时会抓枚举到的第一个 —— 实测那正是 Tang Nano，于是 DFU 位流会被写进夹具的 FPGA
+# 而不是被测板。运行时由 programmer.py 自动填入（判据：序列号里不含 BL702 的那个，
+# 与 fpga.py 挑夹具的判据互为反面）。实测两个设备：
+#     --ftdi-serial 2025030317               -> GW5AT-60   本产品
+#     --ftdi-serial BL702_FTDI_2038131017A8  -> GW1N(R)-9C Tang Nano 夹具
 argv_windows = ["bin/openFPGALoader/openFPGALoader.exe", "-c", "ft2232",
+                "--ftdi-serial", "{ftdi_serial}",
                 "--external-flash", "--verify", "-o", "{spiaddr}", "{image}"]
 # run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs/.bin 位流）；
 # 切勿用 55/56（那是 RISC-V "C Bin"，烧位流会写 0 字节）。

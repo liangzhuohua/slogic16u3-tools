@@ -183,8 +183,26 @@ def _winusb_deploy(log_cb) -> bool:
     # not found / busy" while a concurrent Windows install is in flight yet bind
     # WinUSB a moment later, so we IGNORE wdi's exit code and judge by the real
     # driver state: poll the service bound to MI_00 until it becomes WinUSB.
-    extract_dir = Path(tempfile.gettempdir()) / "slogic_wdi"
-    wdi = (f'"{WDI_EXE}" -v 0x{FTDI_VID} -p 0x{FTDI_PID} -i 0 -t 0 '
+    # 解压目录**每次都用全新的**。
+    #
+    # 为什么：libwdi 会把 installer_x64.exe 解压到 -d 指定的目录并执行它。如果那
+    # 个安装器卡住不退出（实测挂了几小时），文件就被占用；复用同一个目录时下一次
+    # 部署直接失败：
+    #   libwdi:error [extract_binaries] Could not create file
+    #     '...\slogic_wdi\.\installer_x64.exe'
+    #     ([#00000020] ... being used by another process.)
+    # 而且那个进程是提权启动的，普通权限 taskkill 不掉 —— 于是**此后所有部署都失败**。
+    # 换一个空的临时目录就完全绕开了这个问题。
+    extract_dir = Path(tempfile.mkdtemp(prefix="slogic_wdi_"))
+    # 顺手清理：结束卡住的 installer 进程、删掉旧的固定解压目录。
+    # 这些都写在提权后的 bat 里执行，所以有权限动那些提权进程。
+    legacy = Path(tempfile.gettempdir()) / "slogic_wdi"
+    pre = ("taskkill /F /IM installer_x64.exe >nul 2>&1 & "
+           "taskkill /F /IM installer_x86.exe >nul 2>&1 & ")
+    if legacy.exists():
+        pre += f'rmdir /s /q "{legacy}" >nul 2>&1 & '
+    pre += "ping -n 2 127.0.0.1 >nul & "          # 约 1 秒，等进程真正退出
+    wdi = (pre + f'"{WDI_EXE}" -v 0x{FTDI_VID} -p 0x{FTDI_PID} -i 0 -t 0 '
            f'-o 15000 -d "{extract_dir}" -n "{WINUSB_NAME}"')
     log_cb("Installing WinUSB on the FTDI A-channel (interface 0)...")
     _run_elevated_bat(wdi, log_cb)
@@ -248,6 +266,23 @@ Write-Output '  device tree rescanned'
 # --------------------------------------------------------------------------- #
 #  Windows: read the driver service bound to the FTDI A-channel (interface 0)  #
 # --------------------------------------------------------------------------- #
+def _hidden_kwargs() -> dict:
+    """让 powershell 子进程**完全不显示窗口**。
+
+    只给 CREATE_NO_WINDOW 在部分场景下不够：实测从无控制台的 `--windowed` 父进程
+    启动、且子进程活得比较久（例如 Get-PnpDevice 要 2~3 秒）时，powershell 的控制台
+    窗口仍会露出来闪一下。再叠加 STARTF_USESHOWWINDOW + SW_HIDE 才稳。
+    """
+    kw: dict = {}
+    if sys.platform == "win32":
+        kw["creationflags"] = 0x08000000                 # CREATE_NO_WINDOW
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        kw["startupinfo"] = si
+    return kw
+
+
 def _winusb_service() -> str:
     """Service name bound to MI_00, e.g. 'WinUSB' or 'FTDIBUS'; '' if the
     device is absent or the query fails.  Needs no elevation (read-only)."""
@@ -259,7 +294,8 @@ def _winusb_service() -> str:
     try:
         p = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-Command", ps], capture_output=True, text=True, timeout=20)
+             "-Command", ps], capture_output=True, text=True, timeout=20,
+            **_hidden_kwargs())
     except (OSError, subprocess.SubprocessError):
         return ""
     return (p.stdout or "").strip()
@@ -308,7 +344,8 @@ def _run_elevated_bat(cmdline: str, log_cb) -> tuple[int, str]:
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-Command", ps], capture_output=True, text=True)
+             "-Command", ps], capture_output=True, text=True,
+            **_hidden_kwargs())
     except OSError as e:
         log_cb(f"powershell failed: {e}")
         return 1, ""

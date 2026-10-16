@@ -1,4 +1,15 @@
-# SLogic32U3 产品档案（公开，入库）
+# SLogic32U3 产品档案
+#
+# 信号源：Tang Nano 9K 夹具（testgen 设计，10 个图案模式 M0..M9）。
+# 取代原先的外置固定 10 MHz 信号源 —— 那只能验频率和占空比，
+# 而这里可以验通道顺序、静态电平、PRBS 码型、协议内容和突发结构。
+#
+# 期望值不在本文件里。40 个配置块 x 32 通道 = 1280 个数字，
+# 写死既不现实、改 RTL 时也必然漏改；期望值由 slogicpt/patterns.py
+# 按 RTL 规则算出。本文件只声明"测什么"。
+#
+# 改本文件时注意 window_ms：采集窗口必须装得下该模式最慢信号的好几个周期。
+# 窗口太短会有通道一个上升沿都抓不到，测出来是"静态"，看着像故障其实是取样不足。
 schema_version = 1
 
 [product]
@@ -8,65 +19,104 @@ display_name = "SLogic32U3"
 [usb]
 vid = 0x359F
 app_pid = 0x3032
-dfu_pid = 0x30F2   # 32U3 专用 DFU PID，与 16U3 的 0x30F1 区分（此前固件共用 0x30F1，现已分开）
+dfu_pid = 0x30F2
+
+# ---------------------------------------------------------------------------
+# 夹具信号源
+# ---------------------------------------------------------------------------
+# BL702 桥的 VID:PID（pyserial 报十进制，这里是十六进制）。serial = "auto"
+# 时按这对 ID 自动找口；找不到则相关步骤 SKIP，不判 FAIL。
+#
+# firmware_run = 2 是 Gowin 的 "SRAM Program"。不用外部 Flash 是因为
+# programmer_cli 的所有 exFlash 操作都报 "spi flash not found"（详见
+# 项目文档 production_test_plan.md 的 R1）。SRAM 每次重烧，代价约 3 秒，
+# 好处是夹具状态每次都确定 —— FPGA 会因拔插探针线的小掉电丢失配置，
+# 丢后引脚全部悬空、分析仪全通道读高。
+#
+# ⚠️ 这一步必须排在所有 Gowin 编程器操作之后：编程器的 JTAG 操作会
+#    干扰 FPGA 的 SRAM 配置，放前面会被 blank:flash 清掉。
+[signal_source]
+type             = "fpga"
+serial           = "auto"
+vid              = 0x0403
+pid              = 0x6010
+baud             = 115200
+settle_ms        = 400      # 切模式后的稳定延时
+reply_timeout_ms = 1000     # 等 "MODE n" 回复的超时
+firmware         = "firmware/testgen.fs"
+firmware_run     = 2        # 2 = SRAM Program（4 = 带校验）
+
+# 接线置换：channel_order[g] = 发生器 CH g 实际到达的分析仪输入。
+#
+# 当前是 1:1（直连）。2026-10-14 有一段时间是对调的（CH0-CH7 与 CH16-CH23
+# 两组八根飞线互换，由 M4 的逐实例 SPI 字判定出来），修线之后恢复直连。
+#
+# 如果哪天又出现错位，用这个流程重新确定：
+#   1. python research/map_check.py    看轮转顺序是不是整齐的整数偏移
+#   2. 跑一次 M4，看每个 spiN 解出的字属于哪个实例 —— 字是每实例唯一的，
+#      所以 D 组解出谁的字，就说明那组线接的是谁
+#   3. 按结果填这张表
+#
+# 表填错不会静默通过：M0 的轮转检查和 M4 的逐实例字都会失败。
+channel_order    = [0, 1, 2, 3, 4, 5, 6, 7,
+                    8, 9, 10, 11, 12, 13, 14, 15,
+                    16, 17, 18, 19, 20, 21, 22, 23,
+                    24, 25, 26, 27, 28, 29, 30, 31]
 
 [capture]
-driver = "sipeed-slogic-analyzer"
-num_channels = 32                   # unitsize = 4 字节/样本
-max_bandwidth_mbps = 800
-channel_options = [8, 16, 32]
-# 采样率档位。高档位需要更少通道的分组：采样时工具自动先下发
-# logic_channels=<通道数>（切换分组）再设采样率：32ch@200M / 16ch@400M / 8ch@800M。
-# 实测（2026-09-14，S/N 202608052052）：400M/800M 档位可解锁、分组数据通路正常
-# （Emulation 数据完整），但分组模式下真实引脚输入全零且与阈值无关——
-# 定位为 FPGA 分组模式输入前端（引脚采样/多路复用）问题，待固件修复。
-samplerates = ["10M", "20M", "25M", "40M", "50M", "80M", "100M", "160M", "200M", "400M", "800M"]
-voltage_threshold_v = 1.6
-default_samples = "1M"
-default_channels = 32        # GUI 默认选择
-default_samplerate = "200M"
+driver              = "sipeed-slogic-analyzer"
+num_channels        = 32
+max_bandwidth_mbps  = 800
+channel_options     = [4, 8, 16, 32]
+samplerates         = ["10M", "20M", "25M", "40M", "50M", "80M", "100M",
+                       "160M", "200M", "400M", "800M", "1400M"]
+voltage_threshold_v = 1.5
+default_samples     = "1M"
+default_channels    = 32
+default_samplerate  = "200M"
 
-[[capture.tests]]
-channels = 32
-samplerate = "200M"
-samples = "1M"
-
-# 以下分组测试点待固件修复"分组模式输入前端全零"问题后启用：
-# [[capture.tests]]
-# channels = 16
-# samplerate = "400M"
-# samples = "1M"
+# ---------------------------------------------------------------------------
+# 双阈值：1.8 V 的 bank 3 通道
+# ---------------------------------------------------------------------------
+# 夹具把两种电平送进同一台分析仪：CH0..CH19 和 CH26..CH31 来自 3.3 V bank，
+# CH20..CH25 来自 bank 3 —— 板上 PSRAM 把 bank 3 锁在 1.8 V。
+# 每次采集只有一个全局阈值，而实测证明没有任何单一值能同时满足两组：
 #
-# [[capture.tests]]
-# channels = 8
-# samplerate = "800M"
-# samples = "1M"
+#   1.5 V+  阶梯完全干净，但 1.8 V 通道只有 0.3 V 余量，读出 3 倍虚高频率
+#   1.0/1.1 V  1.8 V 通道正常，但 3.3 V 通道收进相邻快通道的串扰，
+#              频率读成周围所有更快通道之和
+#
+# 所以这 6 路再采一次，判定取自低阈值那一次。
+[[capture.threshold_groups]]
+label               = "bank 3 (1.8 V, PSRAM-locked)"
+channels            = [20, 21, 22, 23, 24, 25]
+voltage_threshold_v = 0.9
 
 [expected]
-freq_hz = 10_000_000
-duty_pct = 50.0
 freq_tol_pct = 5.0
-duty_tol_pp = 5.0
+duty_tol_pp  = 5.0
 
 [firmware]
-app = "firmware/app.bin"     # 相对本产品目录（gitignore）
-app_flash_addr = 0x0                 # TBD：随硬件确认修改
+app = "firmware/app.bin"
+app_flash_addr = 0x0
 verify = true
 
-[ota]                        # DFU 升级 app.bin（USB-SPI 桥）调参，缺省即保守稳定值
-# write_chunk 是提速主杠杆：页编程每笔 SPI 事务的数据字节，调大 = USB 往返更少 = 更快。
-# 受桥接器 TX FIFO/单事务上限约束，过大会卡死总线（SR1 恒读 0xFF、烧录挂起）。
-# 建议 12→32→64→128→256 逐级试、全程保持 verify=true，确认稳定再固定。超范围自动钳位。
-write_chunk = 48             # 本机实测：48 稳定可用（32U3）。1..256，program 已按 256 页边界分块
-read_chunk = 64             # 1..512，回读校验每次 CMD_READ_DATA 字节
-usb_timeout_ms = 1000        # 单次 USB 批量传输超时
-wip_timeout_s = 5.0          # 页写/擦除完成轮询超时
-reset_settle_s = 2.0         # 复位后重枚举等待（每次烧录固定开销，稳定后可下调提速）
+[ota]
+# write_chunk：单次页编程(PP)事务的数据字节数。代码默认 12（保守），上限 256
+#（program() 按 256 页边界分块，故不会跨界）。
+#
+# 2026-10 排查：原值 200 曾多次把 DUT 的 USB-SPI 桥接器跑进挂死状态（表现为下一次
+# 烧写一开始就报 [Errno 32] Pipe error / [Errno 5]，只有断电重启或 RECONFIG 才能
+# 恢复）。桥接器单事务缓冲有限，明显小于 200；参考读回路径 read_chunk=64（桥每次
+# CMD_READ_DATA 只回一个 ≤64B 批量包），写入也取 64 —— 比 12 快得多，又留足余量。
+# 若确认稳定，可逐级上调（64 → 96 → 128）找可靠上限；每次上调后连跑几遍完整烧写。
+write_chunk = 64
+read_chunk = 64
+usb_timeout_ms = 1000
+wip_timeout_s = 5.0
+reset_settle_s = 2.0
 
 [mode_switch]
-# 32U3 支持 USB 控制传输 RECONFIG（协议规范 0x30 设备管理扩展）自动双向切换
-# DFU<->APP：wValue=1 触发、wIndex=0x5253。工具在切换步骤直接下发，无需人工。
-# 失败时依次回退 programmer.toml [programmer.switch]（若声明）/ 弹窗人工。
 usb_reconfig = true
 
 [timeouts]
@@ -75,3 +125,76 @@ wait_app_device_s = 30
 dfu_flash_s = 600
 capture_s = 120
 blank_flash_step_s = 120
+
+# ===========================================================================
+# 测试计划：10 个模式 x 4 档通道/速率 = 40 个采集点
+# ===========================================================================
+# 四档全测是刻意的：分析仪的规格包含全部四档，只测最省事的那一档
+# 就等于没验规格。优化后全矩阵约 63 秒（双阈值多出 12 秒）。
+
+
+[[plan]]
+mode    = 0
+label   = "wiring / mapping"
+ready   = true
+checks  = ["order"]
+note    = "every channel is SKIP on its own; the rotation check carries the verdict, because WHICH channel is high during which step is what identifies a wire"
+configs = [
+  { channels = 32, samplerate = "200M", window_ms = 10, max_samples = 8000000 }
+]
+
+[[plan]]
+mode    = 1
+label   = "4ch SPI @54 MHz"
+ready   = true
+checks  = ["protocol"]
+configs = [
+  { channels = 4 , samplerate = "1400M", window_ms = 2, max_samples = 8000000 }
+]
+
+[[plan]]
+mode    = 2
+label   = "8ch SPI @27 MHz"
+ready   = true
+checks  = ["protocol"]
+configs = [
+  { channels = 8 , samplerate = "800M", window_ms = 10, max_samples = 8000000 }
+]
+
+[[plan]]
+mode    = 3
+label   = "16ch SPI @13.5 MHz"
+ready   = true
+checks  = ["protocol"]
+configs = [
+  { channels = 16, samplerate = "400M", window_ms = 10, max_samples = 8000000 }
+]
+
+[[plan]]
+mode    = 4
+label   = "32ch SPI + I2C + UART @6.75 MHz"
+ready   = true
+checks  = ["protocol"]
+configs = [
+  { channels = 32, samplerate = "200M", window_ms = 10, max_samples = 8000000 }
+]
+
+[[plan]]
+mode    = 5
+label   = "narrow pulse"
+ready   = true
+checks  = ["freq"]
+note    = "CH2/CH3/CH4 判脉冲宽度（边沿率判不了）：CH2=两个18.5ns脉冲相隔18.5ns、CH3=每1ms一个18.5ns脉冲、CH4=宽度18.5ns~2.37us扫描。窗口 4 ms 是必须的：CH5..CH31 是 1 kHz（周期 1 ms），窗口不足 3 ms 时它们会被判成'无法判定'而直接红。"
+configs = [
+  { channels = 32, samplerate = "200M", window_ms = 4, max_samples = 8000000 }
+]
+
+[[plan]]
+mode    = 6
+label   = "burst / trigger"
+ready   = true
+checks  = ["burst"]
+note    = "the envelope is verified by the structured check; per-pulse widths come from deep_checks.check_burst"
+configs = [
+  { channels = 32, samplerate = "200M", window_ms = 40, max_samples = 8000000 }
+]
