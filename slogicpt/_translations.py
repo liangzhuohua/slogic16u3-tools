@@ -474,7 +474,7 @@ ZH: dict[str, str] = {
     'cable-index {cable} answered but reported no IDCODE to compare; using it':
         'cable-index {cable} 有应答但未报告可比对的 IDCODE；使用它',
 
-    # ---- stations: JTAG flashing / production test (v1.0) ------------------
+    # ---- stations: JTAG flashing / production test (v0.2.0) ----------------
     'Recognised automatically from the board':
         '由被测板自动识别',
     'Arm the station: each newly connected board is recognised and run automatically':
