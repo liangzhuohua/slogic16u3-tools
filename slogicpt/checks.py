@@ -214,7 +214,7 @@ class Verdict:
     sub: list["Verdict"] = field(default_factory=list)
     # For verdicts that cover several channels at once -- one SPI master is SCLK,
     # MOSI, MISO and CS_N together, not four separate results, and a mode-level
-    # check like PRBS spans all of them. Named so the report can say which pins
+    # check like the M0 rotation spans all of them. Named so the report can say which pins
     # the result is about; falls back to "CH<n>" when empty.
     channel_text: str = ""
     # The channels that text refers to, so a failed group verdict can be narrowed
@@ -373,7 +373,7 @@ def check_channel(m: Measurement, exp: Expect, tol_pct: float, tol_pp: float,
     elif exp.kind is Kind.FREQ:
         v = check_freq(m, exp, tol_pct, sample_rate_hz)
     else:
-        # GOLDEN / PROTOCOL：逐通道只报读数，内容判定归各自的解码器 —— 所以
+        # PROTOCOL：逐通道只报读数，内容判定归各自的解码器 —— 所以
         # 这是"覆盖"，不是"没判"。
         v = Verdict(m.channel, None, "covered",
                     _fmt_freq(m.freq_hz * sample_rate_hz) if m.toggling else "static",
@@ -382,30 +382,8 @@ def check_channel(m: Measurement, exp: Expect, tol_pct: float, tol_pp: float,
 
 
 # ---------------------------------------------------------------------------
-# deep content checks (M7 PRBS, M8 protocols, M9 burst)
+# deep content checks (M1..M4 protocols, M5 narrow pulses, M6 burst)
 # ---------------------------------------------------------------------------
-
-def _prbs_verdicts(channels: np.ndarray, sample_rate_hz: float) -> list[Verdict]:
-    """M7: verify the LFSR recurrence between every pair of consecutive states.
-
-    Works without knowing the seed or where the capture started. A channel swap
-    breaks every step; a single wrong bit breaks two.
-    """
-    r = deep_checks.check_prbs(channels, sample_rate_hz)
-    detail = ("%d consecutive states, %d match the recurrence"
-              % (r.steps, r.good))
-    if r.bad:
-        detail += "; first mismatch at step %d: got 0x%08X want 0x%08X" % r.bad[0]
-    v = Verdict(0, r.ok, "prbs",
-                "%d states, %d bad" % (r.steps, len(r.bad)),
-                "every step satisfies next=(s<<1)|fb",
-                detail)
-    off = deep_checks.prbs_alignment(channels, sample_rate_hz)
-    v.sub.append(Verdict(
-        0, None, "prbs-align", "offset %s" % off, "",
-        "secondary check: guards against every channel being rotated by one step, "
-        "which the recurrence alone cannot see"))
-    return [v]
 
 
 def _spi_bank_verdicts(channels: np.ndarray, sample_rate_hz: float,
@@ -520,11 +498,6 @@ def _protocol_verdicts(channels: np.ndarray, sample_rate_hz: float,
     return out
 
 
-def deep_checks_spi_word() -> int:
-    from .patterns import SPI_WORD
-    return SPI_WORD
-
-
 def deep_checks_patterns_i2c() -> tuple[int, ...]:
     from .patterns import I2C_ADDR_W, I2C_DATA
     return (I2C_ADDR_W,) + I2C_DATA
@@ -607,7 +580,7 @@ def _narrow_pulse_verdicts(channels: np.ndarray, sample_rate_hz: float) -> list[
 
 
 def _burst_verdicts(channels: np.ndarray, sample_rate_hz: float) -> list[Verdict]:
-    """M9: measure the burst envelope and the pulse widths inside it."""
+    """M6: measure the burst envelope and the pulse widths inside it."""
     out: list[Verdict] = []
     n = channels.shape[0]
     if n < 1:

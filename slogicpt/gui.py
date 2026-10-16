@@ -876,24 +876,6 @@ class ProductionTestGUI(QWidget):
             cable_index=self._board_cable, all_profiles=self.profiles),
             reset_rows=False)
 
-    def _fixture_present(self) -> bool:
-        """检测信号发生器夹具(Tang Nano 9K)是否插着。
-
-        夹具的 BL702 和本产品的 Gowin 烧录器共用 FTDI 0403:6010，只有序列号里带
-        'BL702' 的才是夹具。
-        """
-        try:
-            import serial.tools.list_ports as lp
-        except ImportError:
-            return False
-        try:
-            for p in lp.comports():
-                if (p.vid == 0x0403 and p.pid == 0x6010
-                        and "BL702" in (p.serial_number or "").upper()):
-                    return True
-        except Exception:                                    # noqa: BLE001
-            return False
-        return False
 
     # ---------------------------------------------------- environment prep
     def _run_env_setup(self, action: str):

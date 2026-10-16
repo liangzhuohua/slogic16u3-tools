@@ -1,29 +1,27 @@
-"""Signal model for the Tang Nano 9K test patterns (M0..M9).
+"""Signal model for the Tang Nano 9K test patterns (M0..M6).
 
 WHAT THIS IS
 ------------
 The production profile says *what* to test (which mode, which channel/rate
 group); this module says *what the result should be*. Keeping the expectation in
-code rather than in the TOML matters because the full matrix is 10 modes x 4 rate
-groups x 32 channels = 1280 numbers, and because a change to the RTL should
-require exactly one edit here.
+code rather than in the TOML matters because it is 7 modes x up to 32 channels at
+several rates, and because a change to the RTL should require exactly one edit
+here.
 
 Every number below is derived from the RTL, not guessed from measurements, so
 this file is the place to look when a reading looks wrong.
 
-RTL COMMENT ERRORS FOUND WHILE WRITING THIS (code is right, comments are wrong)
-------------------------------------------------------------------------------
-* `pat_ladder.v` says CH11 is 50 kHz. The divisor is 25, so it is **40 kHz**
-  (1 MHz / 25). The 1-2-5 sequence would need 20. Measurement agrees with the
-  code: 40001 Hz.
-* `pat_core.v` says M6's narrow pulse is on CH0. `fast_out.v` drives it on
-  **fast[1], i.e. CH1**; CH0 in M6 is an 18.5 ns pulse from the 54 MHz domain.
-* `pat_proto.v` says the SPI word rate is 62.5 kHz. `sp_bit` counts 0..16, so a
-  word is 17 bit clocks: **58.82 kHz**. Measurement: 58825 Hz.
-* `pat_core.v`'s M9 header gives pulse widths of 0.1/0.3/0.6/1.2 us. The widths
-  are 8/16/32/64 clocks of 54 MHz: **148/296/593/1185 ns**.
-* The M5 "108 MHz" comment was already corrected in the RTL; the counter runs on
-  the 54 MHz core clock, giving 421.875 kHz.
+MODE NUMBERS
+------------
+Mode numbers are what the fixture's mode mux, MODE_LABELS / _MODES below and
+product.toml's [[plan]] agree on:
+
+  M0 wiring rotation   M1..M4 SPI banks (+ I2C/UART in M4)
+  M5 narrow pulse      M6 burst / trigger
+
+The RTL's internal signal names (m6, m9 ...) still use an older numbering and do
+NOT match these; the models here are named after what they test, not after those
+signals.
 
 ALIASING
 --------
@@ -45,34 +43,14 @@ from enum import Enum
 # Nominal system clock. The real board uses a 27 MHz crystal, so readings sit
 # within a few tens of ppm of these numbers -- well inside any sane tolerance.
 CLK_SYS_HZ = 54_000_000
-CLK_FAST_HZ = 216_000_000            # 432 MHz / 2, PLL ODIV cancels
 
-UART_BAUD_A = 115_200                 # actual divider 468 -> 115384.6 (+0.16%)
-UART_BAUD_B = 9_600                   # exact
-SPI_CLK_HZ = 1_000_000
-SPI_WORD = 0xA5C3
-SPI_CLKS_PER_WORD = 17                # 16 data bits + 1 idle bit
 I2C_SCL_HZ = 100_000
 I2C_ADDR_W = 0xA0                     # 0x50 << 1 | write
 I2C_DATA = (0x12, 0x34)
-I2S_BCLK_HZ = 1_000_000
-I2S_WS_HZ = 31_250                 # BCLK / 32: a stereo frame is 32 bit clocks
-#   (the RTL comment says BCLK/64; the code toggles WS every 16 BCLK, so a
-#    full WS period is 32 BCLK. Measurement agrees: 31.251 kHz.)
 
-# pat_ladder.v's divisor table, indexed by ladder position (CH7 + i).
-# 1 MHz / DIV[i], NOT the 1-2-5 sequence the header comment claims: index 4 is
-# 25 (40 kHz), not 20 (50 kHz).
-LADDER_DIV = (1, 2, 5, 10, 25, 50, 100, 200, 500, 1000,
-              2000, 5000, 10_000, 20_000, 50_000, 100_000, 200_000, 500_000,
-              1_000_000, 2_000_000, 5_000_000, 10_000_000, 20_000_000,
-              50_000_000, 100_000_000)
-
-# M6 / M9 constants
-M6_GLITCH_PERIOD_CLK = 540            # 10 us at 54 MHz
-M9_BURST_PERIOD_CLK = 1_080_000       # 20 ms (was 100 ms; see pat_core.v B_PERIOD)
-M9_BURST_ACTIVE_CLK = 54_000          # 1 ms
-M9_WIDTH_CLK = (8, 16, 32, 64)        # CH0..CH3 pulse widths
+# M5 narrow pulse / M6 burst constants
+NARROW_PERIOD_CLK = 540            # 10 us at 54 MHz
+BURST_WIDTH_CLK = (8, 16, 32, 64)        # CH0..CH3 pulse widths
 
 
 class Kind(Enum):
@@ -80,7 +58,6 @@ class Kind(Enum):
     STATIC = "static"      # verify a constant level
     DUTY = "duty"          # verify frequency and duty
     SKIP = "skip"          # report the reading, pass no verdict
-    GOLDEN = "golden"      # compare against a generated reference sequence
     PROTOCOL = "protocol"  # decode and check the content
 
 
@@ -149,59 +126,10 @@ def _freq_or_skip(ch: int, f: float, fs: float, duty: float | None = None,
 # per-mode models
 # ---------------------------------------------------------------------------
 
-def _m0(ch: int, fs: float) -> Expect:
+
+def _narrow_pulse(ch: int, fs: float) -> Expect:
     if ch == 0:
-        # toggle every C1M_MAX+1 = 28 cycles of 54 MHz
-        return _freq_or_skip(ch, CLK_SYS_HZ / 56.0, fs,
-                             note="doubles as the time-base check")
-    if ch == 1:
-        return _freq_or_skip(ch, CLK_SYS_HZ / 54_000.0, fs)
-    return Expect(Kind.STATIC, static=(0 if ch % 2 else 1))
-
-
-def _m1(ch: int, fs: float) -> Expect:
-    if ch <= 6:
-        return _freq_or_skip(ch, CLK_FAST_HZ / float(1 << (ch + 1)), fs,
-                             note="fast domain, from fast_out.v")
-    div = LADDER_DIV[ch - 7]
-    return _freq_or_skip(ch, 1_000_000.0 / div, fs,
-                         note="ladder DIV=%d" % div)
-
-
-def _m2(ch: int, fs: float) -> Expect:
-    return _freq_or_skip(ch, 1_000_000.0 / float(1 << (ch + 1)), fs)
-
-
-def _m3(ch: int, fs: float) -> Expect:
-    # one channel high for 100 us out of a 3.2 ms rotation
-    return _freq_or_skip(ch, 1.0 / 3.2e-3, fs, duty=100.0 / 3200.0 * 100.0)
-
-
-def _m4(ch: int, fs: float) -> Expect:
-    # channel N emits N+1 one-microsecond pulses in the 96 us window at the start
-    # of each 1 ms frame. Averaging rising-edge intervals over whole frames gives
-    # approximately (N+1) kHz, but the inter-frame gap biases it upward at the top
-    # of the range, so this is reported rather than failed.
-    return Expect(Kind.SKIP, freq_hz=(ch + 1) * 1000.0,
-                  note="%d pulses per 1 ms frame, 1 us wide, 3 us slots" % (ch + 1))
-
-
-def _m5(ch: int, fs: float) -> Expect:
-    # 128 clocks of 54 MHz per frame, channel n high for (n+1) of 32 slots.
-    #
-    # CH31 is high for all 32 slots, so it is a CONSTANT, not a signal. Modelling
-    # it as "421.875 kHz at 100% duty" made the checker demand an edge train that
-    # cannot exist and fail a perfectly good channel.
-    if ch == 31:
-        return Expect(Kind.STATIC, static=1,
-                      note="100% duty -- always high, no edges by construction")
-    return _freq_or_skip(ch, CLK_SYS_HZ / 128.0, fs,
-                         duty=100.0 * (ch + 1) / 32.0)
-
-
-def _m6(ch: int, fs: float) -> Expect:
-    if ch == 0:
-        return _freq_or_skip(ch, CLK_SYS_HZ / M6_GLITCH_PERIOD_CLK, fs,
+        return _freq_or_skip(ch, CLK_SYS_HZ / NARROW_PERIOD_CLK, fs,
                              note="18.5 ns wide, once per 10 us")
     if ch == 1:
         # Was a 4.63 ns pulse from fast_out on the 216 MHz clock. The fast domain
@@ -213,7 +141,7 @@ def _m6(ch: int, fs: float) -> Expect:
                            "when the fast domain moved to 108 MHz (148 ns there, "
                            "wider than CH0's 18.5 ns, so it added nothing)")
     if ch == 2:
-        return Expect(Kind.SKIP, freq_hz=CLK_SYS_HZ / M6_GLITCH_PERIOD_CLK,
+        return Expect(Kind.SKIP, freq_hz=CLK_SYS_HZ / NARROW_PERIOD_CLK,
                       note="two 18.5 ns pulses 18.5 ns apart; a normal capture "
                            "merges them, so the edge rate is not a stable verdict",
                       covered_by="窄脉冲宽度检查")
@@ -230,53 +158,12 @@ def _m6(ch: int, fs: float) -> Expect:
     return _freq_or_skip(ch, 1000.0, fs, note="1 kHz reference fill")
 
 
-def _m7(ch: int, fs: float) -> Expect:
-    # A maximal-length 32-bit LFSR clocked at 1 MHz: each bit is pseudorandom, so
-    # it changes on half the clocks -> 500k transitions/s -> 250k rising edges/s.
-    # The exact sequence is available from golden_prbs() for a bit-for-bit check.
-    return Expect(Kind.GOLDEN, freq_hz=250_000.0,
-                  note="LFSR x^32+x^22+x^2+x+1 at 1 MHz; ~250 kHz mean edge rate")
-
-
-def _m8(ch: int, fs: float) -> Expect:
-    if ch == 0:
-        return Expect(Kind.PROTOCOL, note="UART %d 8N1 -> 'SLogic32U3\\r\\n'"
-                      % UART_BAUD_A)
-    if ch == 1:
-        return Expect(Kind.PROTOCOL, note="UART %d 8N1 -> 'SLogic32U3\\r\\n'"
-                      % UART_BAUD_B)
-    if ch == 2:
-        return _freq_or_skip(ch, SPI_CLK_HZ, fs, note="SPI clock")
-    if ch == 3:
-        return Expect(Kind.PROTOCOL, note="SPI MOSI, MSB first, word 0x%04X" % SPI_WORD)
-    if ch == 4:
-        return _freq_or_skip(ch, SPI_CLK_HZ / SPI_CLKS_PER_WORD, fs,
-                             note="SPI CS_N, one low pulse per %d-bit word"
-                                  % (SPI_CLKS_PER_WORD - 1))
-    if ch == 5:
-        return _freq_or_skip(ch, I2C_SCL_HZ, fs, note="I2C clock")
-    if ch == 6:
-        return Expect(Kind.PROTOCOL,
-                      note="I2C SDA: START, 0x%02X, 0x%02X, 0x%02X, STOP"
-                           % (I2C_ADDR_W, I2C_DATA[0], I2C_DATA[1]))
-    if ch == 7:
-        return _freq_or_skip(ch, I2S_WS_HZ, fs, note="I2S word select")
-    if ch == 8:
-        return Expect(Kind.PROTOCOL,
-                      note="I2S SD: left = frame counter, right = its complement")
-    if ch == 9:
-        return _freq_or_skip(ch, I2S_BCLK_HZ, fs, note="I2S bit clock")
-    # CH10..CH31: the top 22 bits of the 1 MHz counter
-    return _freq_or_skip(ch, 1_000_000.0 / float(1 << (ch + 1)), fs,
-                         note="counter fill bit %d" % ch)
-
-
-def _m9(ch: int, fs: float) -> Expect:
+def _burst(ch: int, fs: float) -> Expect:
     if ch < 4:
-        width_clk = M9_WIDTH_CLK[ch]
+        width_clk = BURST_WIDTH_CLK[ch]
         width_ns = width_clk / (CLK_SYS_HZ / 1e9)
         return Expect(Kind.SKIP,
-                      freq_hz=CLK_SYS_HZ / M6_GLITCH_PERIOD_CLK,
+                      freq_hz=CLK_SYS_HZ / NARROW_PERIOD_CLK,
                       note=("%d clocks = %.1f ns wide, repeated every 10 us, but "
                             "only during a 1 ms burst that recurs every 20 ms; "
                             "the measured rate therefore depends on the capture "
@@ -372,7 +259,7 @@ def _spi_bank_mode(ch: int, fs: float, mode: int) -> Expect:
                         % (inst, (~spi_bank_word(inst)) & 0xFFFF)))
 
 
-def _new_m0(ch: int, fs: float) -> Expect:
+def _wiring(ch: int, fs: float) -> Expect:
     """Walking one: exactly one channel high at a time, rotating CH0..CH31.
 
     Every channel is deliberately SKIP here and the verdict comes from the
@@ -396,13 +283,13 @@ def _new_m0(ch: int, fs: float) -> Expect:
 
 
 _MODES = {
-    0: _new_m0,
+    0: _wiring,
     1: lambda ch, fs: _spi_bank_mode(ch, fs, 1),
     2: lambda ch, fs: _spi_bank_mode(ch, fs, 2),
     3: lambda ch, fs: _spi_bank_mode(ch, fs, 3),
     4: lambda ch, fs: _spi_bank_mode(ch, fs, 4),
-    5: _m6,          # narrow pulse, unchanged from the previous design
-    6: _m9,          # burst / trigger, unchanged
+    5: _narrow_pulse,
+    6: _burst,
 }
 
 
@@ -450,13 +337,11 @@ def expected(mode: int, nch: int, samplerate_hz: float,
     edge and no frequency at all. Any channel slower than that is downgraded to
     SKIP rather than failed -- the instrument is not being asked a fair question.
 
-    This matters because the ladder and the counter both run down to 0.01 Hz. Those
-    rungs are real and correct, but verifying them would need a capture of minutes,
-    so a production profile is expected to declare a window and accept SKIPs below
-    it.
+    So a profile must declare a window long enough for its slowest checked
+    channel (M5's 1 kHz fill needs >= 3 ms).
     """
     if mode not in _MODES:
-        raise ValueError("no model for mode %r (expected 0..9)" % (mode,))
+        raise ValueError("no model for mode %r (expected one of %s)" % (mode, sorted(_MODES)))
     fn = _MODES[mode]
     out = [fn(ch, samplerate_hz) for ch in range(nch)]
 
@@ -482,54 +367,6 @@ def _fmt_hz(f: float) -> str:
     if f >= 1e3:
         return "%.4g kHz" % (f / 1e3)
     return "%.4g Hz" % f
-
-
-# ---------------------------------------------------------------------------
-# golden reference sequences
-# ---------------------------------------------------------------------------
-
-def golden_prbs(n_samples: int) -> list[int]:
-    """The first `n_samples` states of M7's LFSR, oldest first.
-
-    Mirrors pat_core.v: seed 0xDEADBEEF, feedback from bits 31,21,1,0, shifted
-    left into bit 0, advancing at 1 MHz. Each returned value is the 32-bit state,
-    which is exactly what the 32 channels present at that instant (CH0 = bit 0).
-    """
-    lfsr = 0xDEADBEEF
-    out = []
-    for _ in range(n_samples):
-        fb = ((lfsr >> 31) ^ (lfsr >> 21) ^ (lfsr >> 1) ^ lfsr) & 1
-        lfsr = ((lfsr << 1) | fb) & 0xFFFFFFFF
-        out.append(lfsr)
-    return out
-
-
-def golden_uart(text: bytes, baud: int, clk_hz: int = CLK_SYS_HZ) -> list[int]:
-    """Sample-by-sample UART line level at `clk_hz`, 8N1, idle high.
-
-    The divider is rounded the way the RTL does it, so the +0.16% baud error on
-    the 115200 transmitter shows up here too instead of silently disagreeing with
-    the hardware.
-    """
-    div = max(1, round(clk_hz / baud))
-    bits: list[int] = []
-    for byte in text:
-        bits.append(0)                              # start
-        for i in range(8):
-            bits.append((byte >> i) & 1)            # LSB first
-        bits.append(1)                              # stop
-    out = []
-    for b in bits:
-        out.extend([b] * div)
-    return out
-
-
-def golden_i2c_bytes() -> tuple[int, ...]:
-    return (I2C_ADDR_W,) + I2C_DATA
-
-
-def expected_spi_word() -> int:
-    return SPI_WORD
 
 
 # ---------------------------------------------------------------------------
@@ -601,21 +438,6 @@ def _selftest() -> int:
 
     print("== mode table is exactly M0..M6 ==")
     check(sorted(_MODES) == list(range(7)) == sorted(MODE_LABELS), "7 modes, labels match")
-
-    print("== golden PRBS ==")
-    g = golden_prbs(4)
-    print("  first states: %s" % " ".join("%08X" % v for v in g))
-    # a maximal LFSR over 2^32-1 must not return to the seed early
-    g2 = golden_prbs(1000)
-    if 0xDEADBEEF in g2[1:]:
-        print("  FAIL: LFSR repeated early"); fails += 1
-
-    print("== golden UART ==")
-    u = golden_uart(b"A", 9600)
-    bits = round(len(u) / 10)
-    print("  'A' at 9600 -> %d samples, %d samples/bit" % (len(u), bits))
-    if bits != round(CLK_SYS_HZ / 9600):
-        print("  FAIL: baud divider"); fails += 1
 
     print()
     print("RESULT: %s" % ("OK" if not fails else "%d FAILURES" % fails))

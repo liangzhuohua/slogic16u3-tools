@@ -1,34 +1,20 @@
-"""Content-level checks: PRBS recurrence, protocol decoding, burst structure.
+"""Content-level checks: protocol decoding and burst structure.
 
 These go beyond frequency. Frequency says a channel is toggling at roughly the
 right rate; it says nothing about whether the bits are the right bits, whether a
 probe pair is swapped, or whether a UART is sending the right text. That gap is
 exactly what "the existing production test is not thorough enough" meant.
 
-M7 -- PRBS WITHOUT ALIGNMENT
-----------------------------
-The obvious way to check an LFSR output is to generate the golden sequence and
-search for where the capture starts. That needs the seed, a known start time and a
-tolerance for a drifting bit clock.
+PROTOCOLS (M1..M4)
+------------------
+SPI is decoded on the clock edges with CS framing (one decoder per SPI bank
+instance; every instance sends its own word, so a swapped wire group decodes the
+wrong instance's word); I2C by watching SDA during SCL high for start/stop and
+sampling data bits; UART by sampling mid-bit from each start edge.
 
-There is a much better way. The generator advances by a fixed recurrence:
-
-    next = (state << 1) | (bit31 ^ bit21 ^ bit1 ^ bit0)
-
-so every pair of CONSECUTIVE observed states can be checked against that rule
-independently. No alignment, no seed, no phase. A single wrong bit anywhere breaks
-the recurrence at that step, and a swapped probe pair breaks every step.
-
-The only thing it cannot see is a constant rotation of all 32 channels at once,
-because that maps the state to itself shifted by one step; the golden search is
-kept as a secondary check for that case.
-
-M8 -- PROTOCOLS
----------------
-UART is decoded by sampling mid-bit from each start edge; SPI on the clock edges
-with CS framing; I2C by watching SDA during SCL high for start/stop and sampling
-data bits. I2S uses the bit clock to sample the serial data and the word select to
-split left from right.
+BURST (M6)
+----------
+The burst envelope (period, active length, silence) and the pulse widths inside it.
 """
 from __future__ import annotations
 
@@ -37,97 +23,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# M7 PRBS
-# ---------------------------------------------------------------------------
-
-LFSR_SEED = 0xDEADBEEF
-PRBS_CLK_HZ = 1_000_000            # pat_core.v advances the LFSR on tick_us
-
-
-def _lfsr_next(state: int) -> int:
-    """One step of x^32 + x^22 + x^2 + x + 1, matching pat_core.v."""
-    fb = ((state >> 31) ^ (state >> 21) ^ (state >> 1) ^ state) & 1
-    return ((state << 1) | fb) & 0xFFFFFFFF
-
-
-def _states_from_capture(channels: np.ndarray, sample_rate_hz: float,
-                         clk_hz: float = PRBS_CLK_HZ
-                         ) -> tuple[list[int], int]:
-    """Read one 32-bit LFSR state per generator clock.
-
-    Returns (states, samples_per_step). A state is sampled in the middle of its
-    step so a slow edge never lands on a boundary sample.
-    """
-    step = sample_rate_hz / clk_hz
-    n_samples = channels.shape[1]
-    if step < 2:
-        return [], 0
-    istep = int(round(step))
-    states = []
-    # skip the first step: it may be a partial one from before the capture began
-    t = istep + istep // 2
-    while t < n_samples:
-        word = 0
-        for ch in range(min(32, channels.shape[0])):
-            if channels[ch, t]:
-                word |= 1 << ch
-        states.append(word)
-        t += istep
-    return states, istep
-
-
-@dataclass
-class PrbsResult:
-    steps: int = 0
-    good: int = 0
-    bad: list[tuple[int, int, int]] = field(default_factory=list)   # (i, got, want)
-    samples_per_step: int = 0
-
-    @property
-    def ok(self) -> bool:
-        return self.steps >= 4 and not self.bad
-
-
-def check_prbs(channels: np.ndarray, sample_rate_hz: float,
-               clk_hz: float = PRBS_CLK_HZ, max_report: int = 4) -> PrbsResult:
-    states, istep = _states_from_capture(channels, sample_rate_hz, clk_hz)
-    r = PrbsResult(steps=len(states) - 1, samples_per_step=istep)
-    for i in range(len(states) - 1):
-        want = _lfsr_next(states[i])
-        if states[i + 1] == want:
-            r.good += 1
-        elif len(r.bad) < max_report:
-            r.bad.append((i, states[i + 1], want))
-    return r
-
-
-def prbs_alignment(channels: np.ndarray, sample_rate_hz: float,
-                   clk_hz: float = PRBS_CLK_HZ, span: int = 4096) -> int | None:
-    """Secondary check: where in the golden sequence does this capture start?
-
-    Returns the step offset, or None if no offset matches. Guards against a
-    constant rotation of every channel, which the recurrence alone cannot see.
-    """
-    states, _ = _states_from_capture(channels, sample_rate_hz, clk_hz)
-    if len(states) < 8:
-        return None
-    seed_state = states[1] if len(states) > 1 else states[0]
-    gold = LFSR_SEED
-    for off in range(span):
-        if gold == seed_state:
-            for k in range(min(len(states) - 1, 8)):
-                if states[1 + k] != gold:
-                    break
-                gold = _lfsr_next(gold)
-            else:
-                return off
-            return None
-        gold = _lfsr_next(gold)
-    return None
-
-
-# ---------------------------------------------------------------------------
-# M8 protocol decoders
+# protocol decoders (M1..M4)
 # ---------------------------------------------------------------------------
 
 def decode_uart(samples: np.ndarray, sample_rate_hz: float, baud: int,
@@ -379,79 +275,8 @@ def decode_i2c(scl: np.ndarray, sda: np.ndarray,
     return out
 
 
-@dataclass
-class I2sResult:
-    left: list[int] = field(default_factory=list)
-    right: list[int] = field(default_factory=list)
-    frames: int = 0
-
-
-def decode_i2s(bclk: np.ndarray, ws: np.ndarray, sd: np.ndarray,
-               bits_per_channel: int = 16, max_frames: int = 32) -> I2sResult:
-    """Decode I2S into (left, right) sample pairs, MSB first.
-
-    STATUS: OPEN ITEM. This decodes something structured but not yet correct -- on
-    real hardware it reports 32 frame pairs of which about half satisfy
-    right == ~left, and every mismatch is off by exactly one. That is the signature
-    of a frame-counter offset between the two channels, not of a broken decoder, but
-    three formulations (WS-window with a one-bit skip, a fixed 17-edge stride, and
-    re-aligning to each WS transition) gave 50%, 0% and 0% respectively, and two RTL
-    changes to the reload logic did not move the result. It needs a deliberate pass
-    with the WS/SD/BCLK edges laid out side by side, not more guessing.
-
-    What IS established:
-      * pat_proto.v reloads its shift register on the same falling edge that toggles
-        WS, so the first rising edge after a WS change still carries the previous
-        channel's last bit. A one-bit skip is therefore required.
-      * The RTL originally loaded the left from ~frame and the right from frame+1,
-        which makes right == (~left) + 1 rather than the bitwise complement its own
-        header comment promises. That was changed so both channels of a stereo pair
-        come from the same frame number.
-      * The generator does produce 16 bits per channel at a 1 MHz bit clock and a
-        31.25 kHz word select, and BCLK/WS measure correctly.
-    """
-    r = I2sResult()
-    rises = np.flatnonzero((bclk[:-1] == 0) & (bclk[1:] == 1)) + 1
-    cur = 0
-    nbits = 0
-    chan: int | None = None
-    skip_first = False
-    pending_left: int | None = None
-
-    for t in rises:
-        if t >= ws.size:
-            break
-        c = int(ws[t])
-        if chan is None:
-            chan = c
-            skip_first = True
-        if c != chan:
-            if chan == 0:
-                pending_left = cur
-            elif pending_left is not None and nbits >= bits_per_channel - 1:
-                r.left.append(pending_left)
-                r.right.append(cur)
-                r.frames += 1
-                if r.frames >= max_frames:
-                    break
-                pending_left = None
-            else:
-                pending_left = None
-            chan = c
-            cur = 0
-            nbits = 0
-            skip_first = True
-        if skip_first:
-            skip_first = False
-            continue
-        cur = ((cur << 1) | int(sd[t])) & ((1 << bits_per_channel) - 1)
-        nbits += 1
-
-    return r
-
-
 # ---------------------------------------------------------------------------
-# M9 burst structure
+# burst structure (M6)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -519,45 +344,7 @@ def _selftest() -> int:
     fs = 200_000_000
     n = 400_000
 
-    print("== M7 PRBS recurrence ==")
-    states = []
-    st = LFSR_SEED
-    for _ in range(2000):
-        states.append(st)
-        st = _lfsr_next(st)
-    step = fs // PRBS_CLK_HZ
-    chans = np.zeros((32, n), dtype=np.uint8)
-    for i, s in enumerate(states[: n // step]):
-        for ch in range(32):
-            chans[ch, i * step:(i + 1) * step] = (s >> ch) & 1
-    r = check_prbs(chans, fs)
-    print("  %d steps, %d good, %d bad (samples/step=%d)"
-          % (r.steps, r.good, len(r.bad), r.samples_per_step))
-    if not r.ok:
-        print("  FAIL"); fails += 1
-    print("  alignment: offset %s in the golden sequence"
-          % prbs_alignment(chans, fs))
-
-    print("== M7 a single flipped bit must be caught ==")
-    # The state is sampled at the MIDDLE of each generator clock, so corrupting a
-    # single sample at a step boundary changes nothing. The flip has to last the
-    # whole step to be a real bit error.
-    bad = chans.copy()
-    bad[7, 50 * step:(50 + 1) * step] ^= 1
-    rb = check_prbs(bad, fs)
-    print("  %d bad steps (one bit held wrong for one 1 us step)" % len(rb.bad))
-    if rb.ok:
-        print("  FAIL: a corrupted state was accepted"); fails += 1
-
-    print("== M7 a swapped channel pair must be caught ==")
-    sw = chans.copy()
-    sw[[3, 4]] = sw[[4, 3]]
-    rs = check_prbs(sw, fs)
-    print("  %d bad steps" % len(rs.bad))
-    if rs.ok:
-        print("  FAIL: a swapped pair was accepted"); fails += 1
-
-    print("== M8 UART ==")
+    print("== M4 UART ==")
     text = b"SLogic32U3\r\n"
     for baud in (9600, 115384):
         bits = [1] * 200
@@ -569,7 +356,7 @@ def _selftest() -> int:
         if got != text:
             fails += 1
 
-    print("== M8 SPI ==")
+    print("== M1..M4 SPI ==")
     sclk = np.zeros(n, dtype=np.uint8)
     mosi = np.zeros(n, dtype=np.uint8)
     cs = np.ones(n, dtype=np.uint8)
@@ -591,7 +378,7 @@ def _selftest() -> int:
     if not (sp.words and all(w == word for w in sp.words)):
         fails += 1
 
-    print("== M8 I2C ==")
+    print("== M4 I2C ==")
     # Built the way pat_proto.v drives it: four quarter phases per SCL period
     # (0 = SCL low + data change, 1 = SCL low, 2 = SCL high, 3 = SCL high), and
     # SDA only ever changes during phase 0 or phase 1 -- i.e. while SCL is low --
@@ -621,7 +408,7 @@ def _selftest() -> int:
     if got[:3] != [0xA0, 0x12, 0x34]:
         fails += 1
 
-    print("== M9 burst ==")
+    print("== M6 burst ==")
     fs9 = 50_000_000
     # 周期必须是**真实夹具的 20 ms**，不能是 100 ms：用 100 ms 时 50 ms 的静默
     # 门限也能过，于是掩盖了"门限比真实间隙还大"这个 bug（真机上 M6 从来没被

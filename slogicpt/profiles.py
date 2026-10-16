@@ -76,11 +76,6 @@ def format_rate(hz: int) -> str:
     return str(hz)
 
 
-def parse_count(value) -> int:
-    """'1M' / '100k' / 1000 -> sample count (int)."""
-    return parse_rate(value)
-
-
 @dataclass(frozen=True)
 class CaptureTest:
     channels: int

@@ -752,16 +752,6 @@ class Pipeline:
             self.report_lines.append(t("DFU flash") + f": FAIL ({e})")
             return False
 
-    def _capture_all(self) -> bool:
-        ok_all = True
-        for ct in self.profile.capture_tests:
-            ok = self._capture_one(ct.channels, ct.samplerate_hz, ct.samples,
-                                   self.profile.voltage_threshold_v, None)
-            ok_all = ok_all and ok
-            if self.cancel.is_set():
-                return False
-        return ok_all
-
     def _capture_one(self, channels: int, samplerate_hz: int, samples: str,
                      voltage_threshold_v: float,
                      expected_rows: list[tuple[float, float]] | None) -> bool:
