@@ -8,6 +8,7 @@ schema_version = 1
 
 [programmer]
 device = "GW5AT-15A"               # SLogic16U3 = Gowin GW5AT-15A（IDCODE 0x0001681B）
+idcode = 0x0001681B                # JTAG 工位按此自动识别产品（读到的 IDCODE == 本值 -> 16U3）
 
 # --- 可选覆盖（默认见 resources/programmer.toml）---
 # cable_candidates = [4, 1, 5]     # 调整探测顺序（默认 [4, 1, 5, 0]）

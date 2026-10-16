@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -89,46 +90,63 @@ STEP_LABELS: dict[str, str] = {
     "wait_app": "Wait for APP device",
     "switch_dfu": "Switch to DFU mode",
     "signal:flash": "Fixture · flash signal generator",
+    "link:check": "Check USB link",
 }
 
+# Production is split into stations; this tool runs two of them (app-firmware
+# OTA is done by a separate batch web tool between the two):
+#   jtag -- blank board on the JTAG programmer: eFuse AES key + DFU base image;
+#   test -- board running its app firmware: link gate, then the signal tests.
+STATIONS = ("jtag", "test")
+STATION_LABELS = {"jtag": "JTAG flashing", "test": "Production test"}
 
-def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
-    """(id, label) of the linear production sequence, without a Pipeline
-    instance -- the GUI builds its step list from this so ids always match."""
-    plan: list[tuple[str, str]] = []
-    prog = profile.programmer
-    if prog is not None and prog.flash is not None:
-        # 加密 DFU 位流须先把 AES 密钥写入 eFuse 才能启动（lock 防密钥读出），
-        # 故 eFuse 写锁是烧空板的前置步骤：未锁 -> 写入并锁定；已锁 -> 跳过。
-        if prog.efuse_key_file is not None:
-            plan.append(("blank:efuse", t(STEP_LABELS["blank:efuse"])))
-        plan.append(("blank:flash", t(STEP_LABELS["blank:flash"])))
-    plan.append(("wait_dfu", t(STEP_LABELS["wait_dfu"])))
-    plan.append(("flash_app", t(STEP_LABELS["flash_app"])))
-    plan.append(("switch_app", t(STEP_LABELS["switch_app"])))
-    plan.append(("wait_app", t(STEP_LABELS["wait_app"])))
 
-    # Fixture-based plan. This MUST stay in step with Pipeline._sequence_defs():
-    # the GUI keys its rows on these ids, and a mismatch means the steps exist in
-    # the engine but never appear in the operator's list. That is exactly what
-    # happened when the signal steps were first added -- the engine ran seventeen
-    # steps while the GUI showed six.
-    #
-    # It is also placed after every Gowin programmer step on purpose: running
-    # programmer_cli disturbs the FPGA's SRAM configuration, so the fixture has to
-    # be reloaded after the blank-flash step, not before it.
+def _station_spec(profile: ProductProfile, station: str
+                  ) -> list[tuple[str, str, str, tuple, bool]]:
+    """(step id, label, Pipeline method, method args, abort_on_fail) for one
+    station.  The ONLY definition of a station's steps: sequence_plan() (the
+    GUI's rows) and Pipeline._sequence_defs() (what runs) both read it, so the
+    two can never drift apart -- that drift once left the engine running 17
+    steps while the GUI showed 6."""
+    if station not in STATIONS:
+        raise ValueError(t("Unknown station: {s}").format(s=station))
+    spec: list[tuple[str, str, str, tuple, bool]] = []
+    if station == "jtag":
+        prog = profile.programmer
+        if prog is not None and prog.flash is not None:
+            # 加密 DFU 位流须先把 AES 密钥写入 eFuse 才能启动，故 eFuse 写锁是
+            # 烧 DFU 底包的前置步骤：未锁 -> 写入并锁定；已锁 -> 跳过。
+            if prog.efuse_key_file is not None:
+                spec.append(("blank:efuse", t(STEP_LABELS["blank:efuse"]),
+                             "_efuse_ensure", (), True))
+            spec.append(("blank:flash", t(STEP_LABELS["blank:flash"]),
+                         "_flash_blank", (), True))
+        return spec
+
+    # test station.  The link gate comes first and aborts the run: a board that
+    # did not reach its required link (32U3: 10G) is a FAIL without testing.
+    spec.append(("link:check", t(STEP_LABELS["link:check"]), "_check_link", (), True))
     if profile.signal_source.is_fpga:
-        plan.append(("signal:flash", t(STEP_LABELS["signal:flash"])))
+        spec.append(("signal:flash", t(STEP_LABELS["signal:flash"]),
+                     "_signal_flash", (), False))
         if profile.plan:
-            plan.append(("signal:all",
+            spec.append(("signal:all",
                          t("Signal generator · all {n} patterns").format(
-                             n=len(profile.plan))))
-
+                             n=len(profile.plan)),
+                         "_run_all_modes", (), False))
+    # Legacy path: a profile with no [[plan]] drives an external fixed source.
     for i, ct in enumerate(profile.capture_tests):
-        plan.append((f"capture:{i}",
+        spec.append((f"capture:{i}",
                      t("Capture {ch}ch@{rate}").format(
-                         ch=ct.channels, rate=format_rate(ct.samplerate_hz))))
-    return plan
+                         ch=ct.channels, rate=format_rate(ct.samplerate_hz)),
+                     "_capture_test", (i,), False))
+    return spec
+
+
+def sequence_plan(profile: ProductProfile, station: str) -> list[tuple[str, str]]:
+    """(id, label) of a station's sequence, without a Pipeline instance -- the
+    GUI builds its step list from this so ids always match."""
+    return [(sid, label) for sid, label, *_ in _station_spec(profile, station)]
 
 
 class Pipeline:
@@ -151,82 +169,41 @@ class Pipeline:
 
     # ---- construction helpers -------------------------------------------
 
-    def _sequence_defs(self) -> list[StepDef]:
-        defs: list[StepDef] = []
-        prog = self.profile.programmer
-        if prog is not None and prog.flash is not None:
-            if prog.efuse_key_file is not None:
-                defs.append(StepDef("blank:efuse", t(STEP_LABELS["blank:efuse"]),
-                                    self._efuse_ensure))
-            defs.append(StepDef("blank:flash", t(STEP_LABELS["blank:flash"]),
-                                self._flash_blank))
-        defs.append(StepDef("wait_dfu", t(STEP_LABELS["wait_dfu"]), self._wait_dfu))
-        defs.append(StepDef("flash_app", t(STEP_LABELS["flash_app"]), self._flash_app))
-        defs.append(StepDef("switch_app", t(STEP_LABELS["switch_app"]), self._switch_to_app))
-        defs.append(StepDef("wait_app", t(STEP_LABELS["wait_app"]), self._wait_app))
+    def _sequence_defs(self, station: str) -> list[StepDef]:
+        return [StepDef(sid, label,
+                        (lambda m=getattr(self, meth), a=args: m(*a)),
+                        abort_on_fail=abort)
+                for sid, label, meth, args, abort in _station_spec(self.profile, station)]
 
-        # --- fixture-based plan -------------------------------------------------
-        # The Tang Nano emits ten patterns. They run as ONE step, not ten.
-        #
-        # Ten separate rows meant ten manual clicks in single-step mode, and each
-        # click re-entered the flow. The patterns are cheap to switch (a serial
-        # write, ~6 ms) and are already one logical test -- "does the analyser
-        # reproduce the generator's patterns" -- so the operator gets one button
-        # and the per-mode detail lands in the log.
-        #
-        # ORDER MATTERS: this comes AFTER every Gowin programmer step above.
-        # Measured: running programmer_cli (even a read-only exFlash Verify)
-        # disturbs the FPGA's SRAM configuration, after which the fixture stops
-        # answering on its serial port entirely.
-        if self.profile.signal_source.is_fpga:
-            defs.append(StepDef("signal:flash",
-                                t(STEP_LABELS["signal:flash"]),
-                                self._signal_flash, abort_on_fail=False))
-            if self.profile.plan:
-                defs.append(StepDef(
-                    "signal:all",
-                    t("Signal generator · all {n} patterns").format(
-                        n=len(self.profile.plan)),
-                    self._run_all_modes, abort_on_fail=False))
-
-        # Legacy path: a profile with no [[plan]] still drives an external source
-        # and is checked the old way.
-        for i, ct in enumerate(self.profile.capture_tests):
-            defs.append(StepDef(
-                f"capture:{i}",
-                t("Capture {ch}ch@{rate}").format(
-                    ch=ct.channels, rate=format_rate(ct.samplerate_hz)),
-                lambda ct=ct: self._capture_one(
-                    ct.channels, ct.samplerate_hz, ct.samples,
-                    self.profile.voltage_threshold_v, None),
-                abort_on_fail=False))
-        return defs
+    def _capture_test(self, i: int) -> bool:
+        ct = self.profile.capture_tests[i]
+        return self._capture_one(ct.channels, ct.samplerate_hz, ct.samples,
+                                 self.profile.voltage_threshold_v, None)
 
     @classmethod
-    def full_test(cls, profile: ProductProfile, sigrok: SigrokCli,
-                  callbacks: PipelineCallbacks,
-                  firmware_path=None, cable_index: int | None = None,
-                  image_override=None, efuse_key_override=None) -> "Pipeline":
+    def for_station(cls, profile: ProductProfile, station: str,
+                    sigrok: SigrokCli | None, callbacks: PipelineCallbacks, *,
+                    cable_index: int | None = None,
+                    all_profiles: list[ProductProfile] | None = None) -> "Pipeline":
+        """Every step of one station for the board that was just detected.
+        `all_profiles` lets link:check see analyzers of OTHER products too
+        (sigrok-cli cannot pick one device out of several)."""
         p = cls(profile, sigrok, callbacks, [])
-        p._firmware_override = firmware_path
         p._cable_index = cable_index
-        p._image_override = image_override
-        p._efuse_key_override = efuse_key_override
-        p.steps = p._sequence_defs()
+        p._all_profiles = all_profiles
+        p.steps = p._sequence_defs(station)
         return p
 
     @classmethod
     def single_step(cls, profile: ProductProfile, sigrok: SigrokCli | None,
-                    callbacks: PipelineCallbacks, step_id: str,
-                    firmware_path=None, cable_index: int | None = None,
-                    image_override=None, efuse_key_override=None) -> "Pipeline":
-        """Manual mode: run exactly one sequence step by id."""
+                    callbacks: PipelineCallbacks, step_id: str, station: str, *,
+                    cable_index: int | None = None,
+                    all_profiles: list[ProductProfile] | None = None) -> "Pipeline":
+        """Manual mode: run exactly one of a station's steps by id."""
         p = cls(profile, sigrok, callbacks, [])
-        p._firmware_override = firmware_path
         p._cable_index = cable_index
-        p._image_override = image_override
-        p._efuse_key_override = efuse_key_override
-        matches = [d for d in p._sequence_defs() if d.id == step_id]
+        p._all_profiles = all_profiles
+        matches = [d for d in p._sequence_defs(station) if d.id == step_id]
         if not matches:
             raise ValueError(t("Unknown step: {step_id}").format(step_id=step_id))
         p.steps = matches
@@ -382,6 +359,7 @@ class Pipeline:
         })
 
     _cable_index = None         # external-programmer cable index (from the GUI probe)
+    _all_profiles = None        # every product profile (link:check sees all analyzers)
     _image_override = None      # GUI 会话级：覆盖 DFU 镜像路径
     _efuse_key_override = None  # GUI 会话级：覆盖 eFuse 密钥路径
 
@@ -527,6 +505,67 @@ class Pipeline:
             t("Blank-flash DFU image") + ": " + ("OK" if ok else "FAIL")
             + f" ({img.name} @ {op.spiaddr:#x})")
         return ok
+
+    def _check_link(self) -> bool:
+        """Test-station gate: exactly one analyzer on the host, it is THIS
+        product running its app firmware, and its USB link reached the
+        product's minimum ([usb] min_link, e.g. 10G).  Fails -- and the station
+        aborts the run -- otherwise, so a slow link is never "tested".
+
+        Exactly one, because sigrok-cli cannot choose between several SLogic
+        analyzers (the driver rejects conn=) and would capture from any of them."""
+        p = self.profile
+        devs = device_watch.scan_devices(self._all_profiles or [p])
+        apps = [d for d in devs if d.mode is device_watch.Mode.APP]
+        mine = [d for d in apps if d.profile.id == p.id]
+        need = p.min_link
+        need_txt = device_watch.link_name(need) if need else "-"
+        self._log(f"[criteria] link: exactly 1 analyzer online, {p.display_name} in "
+                  f"APP mode, link >= {need_txt}; seen: "
+                  + (", ".join(str(d) for d in devs) or "none"))
+
+        def fail(why: str) -> bool:
+            self._log(why)
+            self.report_lines.append(t("USB link") + ": FAIL (" + why + ")")
+            return False
+
+        if len(apps) > 1:
+            return fail(t("{n} analyzers online; keep only the board under test "
+                          "connected").format(n=len(apps)))
+        if not mine:
+            if any(d.profile.id == p.id and d.mode is device_watch.Mode.DFU
+                   for d in devs):
+                return fail(t("{name} is in DFU mode: the app firmware has not been "
+                              "flashed").format(name=p.display_name))
+            return fail(t("No {name} running its app firmware was found").format(
+                name=p.display_name))
+        d = mine[0]
+        self.app_serial = d.serial
+        speed = d.speed or self._sigrok_link_speed()
+        got_txt = device_watch.link_name(speed)
+        if need and (speed or 0) < need:
+            return fail(t("link too slow: {got}, needs {need} (check the cable and "
+                          "the host port)").format(got=got_txt, need=need_txt))
+        self._log(t("USB link {got} (needs {need}): OK").format(got=got_txt, need=need_txt))
+        self.report_lines.append(t("USB link") + f": PASS ({got_txt})")
+        return True
+
+    def _sigrok_link_speed(self) -> int | None:
+        """Link speed from sigrok's scan line ("... - (10G) Sipeed SLogic32 U3"),
+        for hosts whose libusb does not report it (old Windows libusb DLLs)."""
+        if self.sigrok is None:
+            return None
+        import re
+        try:
+            lines = self.sigrok.scan(self.profile.driver)
+        except Exception:                                       # noqa: BLE001
+            return None
+        for line in lines:
+            m = re.search(r"\((USB2|5G|10G|20G)\)", line)
+            if m:
+                from .profiles import parse_link
+                return parse_link(m.group(1))
+        return None
 
     def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:
         self._log(t("Waiting for {what} device ({vid}:{pid})...").format(
@@ -1064,7 +1103,7 @@ class Pipeline:
         fails with LIBUSB_ERROR_ACCESS -- a cascade that killed two full runs of
         this project's own matrix before the pattern was found.
         """
-        if os.name != "win32":
+        if sys.platform != "win32":   # NB: os.name is "nt" there, never "win32"
             return
         try:
             subprocess.run(
@@ -1129,9 +1168,39 @@ if __name__ == "__main__":
     from .profiles import load_profiles
     profile = load_profiles()[0][0]
 
-    print("== 序列计划 ==")
-    for sid, label in sequence_plan(profile):
-        print(f"  {sid}: {label}")
+    print("== 序列计划（按工位）==")
+    all_profiles = load_profiles()[0]
+    for prof in all_profiles:
+        for st in STATIONS:
+            ids = [sid for sid, _ in sequence_plan(prof, st)]
+            print(f"  {prof.id} {st}: {ids}")
+            if st == "jtag":
+                assert all(i.startswith("blank:") for i in ids), ids
+            else:
+                assert ids and ids[0] == "link:check", ids
+            # the GUI list and the executed steps come from one table
+            assert ids == [d.id for d in Pipeline(prof, None, cb, [])._sequence_defs(st)]
+
+    print("== link:check 判据（假设备）==")
+    from .device_watch import DeviceStatus, Mode
+    p32 = next(x for x in all_profiles if x.min_link == 5)
+    real_scan = device_watch.scan_devices
+
+    def link_case(devs) -> bool:
+        device_watch.scan_devices = lambda _profiles: devs
+        try:
+            pl = Pipeline(p32, None, cb, [])
+            pl._all_profiles = all_profiles
+            return pl._check_link()
+        finally:
+            device_watch.scan_devices = real_scan
+
+    app = lambda speed: DeviceStatus(p32, Mode.APP, p32.app_pid, "SN", speed=speed)
+    assert link_case([app(5)]) is True                      # 10G -> ok
+    assert link_case([app(4)]) is False                     # 5G < 10G -> FAIL
+    assert link_case([app(5), app(5)]) is False             # two analyzers -> FAIL
+    assert link_case([DeviceStatus(p32, Mode.DFU, p32.dfu_pid, None, speed=3)]) is False
+    assert link_case([]) is False                           # nothing there
 
     print("== 假步骤成功路径 ==")
     p = Pipeline(profile, None, cb, [

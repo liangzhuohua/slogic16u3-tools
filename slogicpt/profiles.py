@@ -41,6 +41,18 @@ PLATFORM_KEY = {"Linux": "linux", "Windows": "windows", "Darwin": "darwin"}.get(
 
 SCHEMA_VERSION = 1
 
+# USB link names -> libusb_speed (LIBUSB_SPEED_*) codes, for [usb] min_link.
+LINK_SPEEDS = {"USB2": 3, "5G": 4, "10G": 5, "20G": 6}
+
+
+def parse_link(name: str) -> int:
+    """'10G' / '5G' / 'USB2' -> libusb speed code (ValueError if unknown)."""
+    key = str(name).strip().upper()
+    if key not in LINK_SPEEDS:
+        raise ValueError(t("unknown link {name!r} (expected one of {opts})").format(
+            name=name, opts="/".join(LINK_SPEEDS)))
+    return LINK_SPEEDS[key]
+
 
 def parse_rate(value) -> int:
     """'200M' / '10k' / '500000' / 200000000 -> Hz (int)."""
@@ -204,8 +216,8 @@ class FlashOp:
 class Programmer:
     """外置 JTAG 烧录器命令声明（来自 programmer.toml）。一个 `cli` argv 前缀
     驱动全部操作：探测（--run 0）、eFuse 读（--keyread）、烧空板（FlashOp）、
-    eFuse 写+锁（--keywritefile --keyFile <key> --keylock）、DFU<->APP 保底
-    切换（switch，见下）。缺省则无烧录能力。"""
+    eFuse 写+锁（--keywritefile --keyFile <key>，写入即自动锁定）、DFU<->APP
+    保底切换（switch，见下）。缺省则无烧录能力。"""
     cli: list[str]                   # argv 前缀，如 [<appimage>, "--programmer-cli"] 或 ["programmer_cli.exe"]
     device: str                      # Gowin --device 型号，如 GW5AT-15A / GW5AT-60B
     cable_candidates: list[int]      # 逐个尝试的 --cable-index，首个读到器件的即用
@@ -216,6 +228,9 @@ class Programmer:
     # 键 "dfu2app"/"app2dfu" -> 追加在公共前缀之后的参数；含 "/" 的 token 视为
     # 产品目录相对路径并解析为绝对路径。空 dict -> 未声明，回退弹窗人工。
     switch: dict[str, list[str]] = field(default_factory=dict)
+    # 本产品 FPGA 的 JTAG IDCODE（如 32U3 GW5AT-60B = 0x0001481B）。JTAG 工位据此
+    # 自动识别接上来的是哪个产品；None -> 不参与自动识别。
+    idcode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -308,6 +323,9 @@ class ProductProfile:
     programmer: Programmer | None       # None -> programmer.toml 缺失/无效，无烧录能力
     timeouts: Timeouts
     ota: OtaParams                      # DFU app.bin 烧录调参（product.toml [ota]）
+    # 产测工位的最低 USB 链路（libusb speed 码，[usb] min_link）；低于它直接 FAIL。
+    # None -> 不设门槛。
+    min_link: int | None = None
 
     @property
     def unitsize(self) -> int:
@@ -439,6 +457,7 @@ def load_programmer(product_dir: Path,
             flash=flash,
             efuse_key_file=key_file,
             switch=switch,
+            idcode=int(praw["idcode"]) if praw.get("idcode") is not None else None,
         )
         return prog, []
     except (KeyError, ValueError, TypeError) as e:
@@ -689,6 +708,7 @@ def _parse_profile(product_dir: Path,
             display_name=str(product["display_name"]),
             vid=int(usb["vid"]),
             app_pid=int(usb["app_pid"]),
+            min_link=parse_link(usb["min_link"]) if usb.get("min_link") else None,
             dfu_pid=int(dfu_pid) if dfu_pid is not None else None,
             driver=str(capture["driver"]),
             num_channels=num_channels,

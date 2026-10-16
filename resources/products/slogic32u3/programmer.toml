@@ -8,6 +8,7 @@ schema_version = 1
 
 [programmer]
 device = "GW5AT-60B"               # SLogic32U3 = Gowin GW5AT-60B（IDCODE 0x0001481B）
+idcode = 0x0001481B                # JTAG 工位按此自动识别产品（读到的 IDCODE == 本值 -> 32U3）
 
 # --- 可选覆盖（默认见 resources/programmer.toml）---
 # cable_candidates = [5, 4, 1]     # 本机 FTDI 枚举为 WINUSB=5；默认 [4, 1, 5, 0] 也能探到

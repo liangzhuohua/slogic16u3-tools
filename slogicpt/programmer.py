@@ -226,7 +226,9 @@ def _read_idcode(out: str) -> tuple[int | None, int | None]:
     are in the same output, so no table of part numbers is needed here.
     """
     exp = re.search(r"Target Device:\s*\S*?\((0x[0-9A-Fa-f]+)\)", out)
-    got = re.search(r"ID Code is:\s*(0x[0-9A-Fa-f]+)", out)
+    # Windows: "ID Code is: 0x0001481B"; Linux: "...; ID 0x0001481B; User Code ..."
+    got = (re.search(r"ID Code is:\s*(0x[0-9A-Fa-f]+)", out)
+           or re.search(r"\bID\s+(0x[0-9A-Fa-f]{8})\b", out))
     return (int(exp.group(1), 16) if exp else None,
             int(got.group(1), 16) if got else None)
 
@@ -237,6 +239,100 @@ def _idcode_matches(out: str) -> bool | None:
     if exp is None or got is None:
         return None
     return exp == got
+
+
+def openfpga_exe() -> Path | None:
+    """openFPGALoader 的位置：产测资源里自带的一份，按平台挑；非 Windows 再退到
+    PATH（Linux 台架用发行版包）。资源目录里只有 Windows 的 .exe 时，Linux 绝不能
+    选它——执行失败会被吞掉，最后只报一句误导性的"找不到设备"。"""
+    import shutil
+    import sys
+    from .profiles import RESOURCES_DIR
+    bundled = RESOURCES_DIR / "bin" / "openFPGALoader"
+    if sys.platform == "win32":
+        cand = bundled / "openFPGALoader.exe"
+        return cand if cand.is_file() else None
+    cand = bundled / "openFPGALoader"
+    if cand.is_file():
+        return cand
+    found = shutil.which("openFPGALoader")
+    return Path(found) if found else None
+
+
+@dataclass
+class Detected:
+    """What sits on the JTAG chain right now (read-only detection)."""
+    profile: object | None     # ProductProfile whose programmer.idcode matched; None = unknown part
+    idcode: int | None
+    cable: int | None          # Gowin cable index when found via programmer_cli
+    via: str                   # "openFPGALoader" | "programmer_cli"
+
+
+def _parse_ofl_idcodes(out: str) -> list[int]:
+    """IDCODEs from `openFPGALoader --detect` ("idcode 0x1481b")."""
+    return [int(m, 16) for m in re.findall(r"idcode\s+(0x[0-9A-Fa-f]+)", out)]
+
+
+def detect_product(profiles, cancel: threading.Event | None = None) -> Detected | None:
+    """Which product is on the JTAG chain?  Matches the IDCODE read off the wire
+    against each profile's programmer.idcode.  Read-only -- never writes the chip
+    -- and silent (it runs from the armed station's poll loop).  None means no
+    JTAG device answered.
+
+    1. openFPGALoader --detect: fast and needs no part name.  It is pointed at
+       the programmer by FTDI serial so the fixture's BL702 (same 0403:6010) is
+       never the one probed.
+    2. Fallback, Gowin programmer_cli --run 0 per product device / cable."""
+    cands = [p for p in profiles
+             if getattr(p, "programmer", None) is not None
+             and p.programmer.idcode is not None]
+    if not cands:
+        return None
+    by_code = {p.programmer.idcode: p for p in cands}
+
+    def verdict(code: int, cable: int | None, via: str) -> Detected:
+        return Detected(by_code.get(code), code, cable, via)
+
+    exe = openfpga_exe()
+    if exe is not None:
+        rows = _programmer_ftdi_rows([str(exe)]) or []
+        others = [r for r in rows if "BL702" not in r[1].upper()]
+        if others:
+            try:
+                proc = subprocess.run(
+                    [str(exe), "-c", "ft2232", "--ftdi-serial", others[0][1], "--detect"],
+                    capture_output=True, text=True, timeout=20, **_popen_kwargs())
+                codes = [c for c in _parse_ofl_idcodes(
+                    (proc.stdout or "") + (proc.stderr or ""))
+                    if c not in (0, 0xFFFFFFFF)]
+            except (OSError, subprocess.SubprocessError):
+                codes = []
+            if codes:
+                hit = next((c for c in codes if c in by_code), codes[0])
+                return verdict(hit, None, "openFPGALoader")
+
+    # programmer_cli picks cables by enumeration index only, so with the
+    # fixture's BL702 (same 0403:6010) present it may open the fixture: it would
+    # read the Tang Nano's IDCODE and its JTAG traffic disturbs the fixture's
+    # SRAM configuration.  Never fall back while a BL702 is on the host.
+    if list_ports is not None and any(
+            "BL702" in (port.serial_number or "").upper()
+            for port in list_ports.comports()
+            if port.vid == FTDI_VID and port.pid == FTDI_PID):
+        return None
+    for p in cands:
+        prog = p.programmer
+        if not prog.cli:
+            continue
+        for cable in prog.cable_candidates:
+            if cancel is not None and cancel.is_set():
+                return None
+            _, out = _run(prog, [*_cable_args(prog.device, cable), "--run", "0"],
+                          lambda _s: None, cancel)
+            got = _read_idcode(out)[1]
+            if got is not None and got not in (0, 0xFFFFFFFF):
+                return verdict(got, cable, "programmer_cli")
+    return None
 
 
 def probe(prog: Programmer, log_cb: Callable[[str], None] = print,
@@ -312,6 +408,27 @@ def probe(prog: Programmer, log_cb: Callable[[str], None] = print,
                          "connected?)") + hint)
 
 
+def _programmer_ftdi_rows(cli: list[str] | None) -> list[tuple[str, str, str]] | None:
+    """`openFPGALoader --scan-usb` 里所有 0403:6010 行 -> (manufacturer, serial,
+    product)。不写日志（布防轮询会频繁调用）。"""
+    if not cli:
+        return None
+    try:
+        proc = subprocess.run([*cli, "--scan-usb"], capture_output=True,
+                              text=True, timeout=20, **_popen_kwargs())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # 列格式：Bus device vid:pid probe_type manufacturer serial product
+    #  001 008  0x0403:0x6010 FTDI2232 SIPEED 2025030317 USB Debugger
+    # 所以三组依次是 manufacturer / serial / product。
+    rows = []
+    for line in (proc.stdout or "").splitlines():
+        m = re.search(r"0x0403:0x6010\s+\S+\s+(\S+)\s+(\S+)\s+(.+?)\s*$", line)
+        if m:
+            rows.append((m.group(1), m.group(2), m.group(3).strip()))
+    return rows
+
+
 def _ftdi_serial_for_programmer(log_cb: Callable[[str], None],
                                 cli: list[str] | None = None) -> str | None:
     """openFPGALoader 该用哪个 FTDI 设备的序列号。
@@ -329,21 +446,7 @@ def _ftdi_serial_for_programmer(log_cb: Callable[[str], None],
       * Gowin 烧录器的形如 `2025030317`，纯数字加通道字母。
     所以挑**不含 BL702 的那个**，与 fpga.py 挑夹具的判据正好相反。
     """
-    if not cli:
-        return None
-    try:
-        proc = subprocess.run([*cli, "--scan-usb"], capture_output=True,
-                              text=True, timeout=20, **_popen_kwargs())
-    except (OSError, subprocess.SubprocessError):
-        return None
-    # 列格式：Bus device vid:pid probe_type manufacturer serial product
-    #  001 008  0x0403:0x6010 FTDI2232 SIPEED 2025030317 USB Debugger
-    # 所以三组依次是 manufacturer / serial / product。
-    rows = []
-    for line in (proc.stdout or "").splitlines():
-        m = re.search(r"0x0403:0x6010\s+\S+\s+(\S+)\s+(\S+)\s+(.+?)\s*$", line)
-        if m:
-            rows.append((m.group(1), m.group(2), m.group(3).strip()))
+    rows = _programmer_ftdi_rows(cli)
     if not rows:
         return None
     others = [r for r in rows if "BL702" not in r[1].upper()]

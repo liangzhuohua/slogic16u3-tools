@@ -62,20 +62,9 @@ def find_programmer(explicit: list[str] | None = None) -> Path | None:
 
 
 def _openfpga_exe() -> Path | None:
-    """openFPGALoader 的位置：产测资源里自带的一份，按平台挑；非 Windows 再退到
-    PATH（Linux 台架用发行版包）。资源目录里只有 Windows 的 .exe 时，Linux 绝不能
-    选它——执行失败会被吞掉，最后只报一句误导性的"找不到夹具"。"""
-    import shutil
-    import sys
-    bundled = RESOURCES_DIR / "bin" / "openFPGALoader"
-    if sys.platform == "win32":
-        cand = bundled / "openFPGALoader.exe"
-        return cand if cand.is_file() else None
-    cand = bundled / "openFPGALoader"
-    if cand.is_file():
-        return cand
-    found = shutil.which("openFPGALoader")
-    return Path(found) if found else None
+    """openFPGALoader 的位置（按平台挑，见 programmer.openfpga_exe）。"""
+    from .programmer import openfpga_exe
+    return openfpga_exe()
 
 
 # Gowin op indexes that target the GW1NR's embedded flash (5 = embFlash

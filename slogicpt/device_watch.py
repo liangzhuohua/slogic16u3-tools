@@ -14,7 +14,7 @@ import usb.backend.libusb1
 import usb.core
 import usb.util
 
-from .profiles import PLATFORM_KEY, RESOURCES_DIR, ProductProfile
+from .profiles import PLATFORM_KEY, RESOURCES_DIR, ProductProfile, parse_link  # noqa: F401
 
 
 class Mode(Enum):
@@ -50,15 +50,37 @@ def backend_ok() -> bool:
     return libusb_backend() is not None
 
 
+# libusb_speed (LIBUSB_SPEED_*) -> short link name.  The production test
+# station gates on these: 32U3 needs a 10G link, 16U3 a 5G one.
+LINK_NAMES = {1: "USB1", 2: "USB1", 3: "USB2", 4: "5G", 5: "10G", 6: "20G"}
+
+
+def link_name(speed: int | None) -> str:
+    return LINK_NAMES.get(speed or 0, "?")
+
+
 @dataclass(frozen=True)
 class DeviceStatus:
+    """One physical device.  Several boards of the same product enumerate
+    with the same VID:PID, so each is reported separately; bus/port_numbers
+    locate it and speed is the negotiated link (LIBUSB_SPEED_*)."""
     profile: ProductProfile
     mode: Mode
     pid: int
     serial: str | None = None   # USB iSerialNumber descriptor (version marker)
+    bus: int | None = None
+    port_numbers: tuple[int, ...] = ()
+    address: int | None = None
+    speed: int | None = None
+
+    @property
+    def link(self) -> str:
+        return link_name(self.speed)
 
     def __str__(self) -> str:
         base = f"{self.profile.display_name} ({self.mode.value})"
+        if self.speed:
+            base += f" {self.link}"
         return f"{base} SN:{self.serial}" if self.serial else base
 
 
@@ -84,6 +106,8 @@ def read_serial(vid: int, pid: int) -> str | None:
 
 
 def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
+    """Every SLogic device on the host, one entry per physical board (with
+    its link speed and port), across all products and both modes."""
     found: list[DeviceStatus] = []
     for p in profiles:
         candidates: list[tuple[int, Mode]] = [(p.app_pid, Mode.APP)]
@@ -91,9 +115,13 @@ def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
             candidates.append((p.dfu_pid, Mode.DFU))
         for pid, mode in candidates:
             try:
-                dev = usb.core.find(idVendor=p.vid, idProduct=pid, backend=libusb_backend())
-                if dev is not None:
-                    found.append(DeviceStatus(p, mode, pid, _serial_of(dev)))
+                devs = usb.core.find(find_all=True, idVendor=p.vid, idProduct=pid,
+                                     backend=libusb_backend())
+                for dev in devs:
+                    found.append(DeviceStatus(
+                        p, mode, pid, _serial_of(dev), bus=dev.bus,
+                        port_numbers=tuple(dev.port_numbers or ()),
+                        address=dev.address, speed=dev.speed))
             except Exception:
                 pass  # backend hiccups shouldn't kill the poll loop
     return found
