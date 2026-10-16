@@ -42,7 +42,8 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 ├── resources/           # 管理员资源：产品档案 / 固件 / 夹具位流 / sigrok-cli（见其 README）
 ├── out/                 # 运行时采样输出（自动创建，不入库）
 ├── build.py             # PyInstaller 单二进制打包
-└── requirements.txt
+├── requirements.txt
+└── TODO.md              # 待验证 / 固件侧 / 台架侧的未完成事项
 ```
 
 ## 快速开始

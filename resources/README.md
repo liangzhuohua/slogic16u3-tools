@@ -13,21 +13,23 @@ resources/
 │   └── firmware/                 # 固件与烧录资源（工厂本地，禁止入库/公开）
 │       ├── app.bin               #   应用固件（DFU 模式下经 SPI Flash 写入）
 │       ├── dfu.fs / dfu.bin      #   空板刷机位流（16U3=.fs / 32U3=.bin，均经 --fsFile）
-│       └── efuse.ekey            #   eFuse AES 密钥（机密，绝不入库）
+│       ├── efuse.ekey            #   eFuse AES 密钥（机密，绝不入库）
+│       └── testgen.fs            #   32U3：信号源夹具（Tang Nano 9K）位流，产测时载入夹具 SRAM
 └── bin/                          # 跨平台工具二进制
-    ├── sigrok-cli-linux-x86_64            # sigrok-cli：Linux AppImage 重命名/软链
+    ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
     ├── sigrok-cli-macos-arm64             #   macOS
     ├── Gowin-Programmer-x86_64.AppImage   # Gowin 烧录器（Linux，版本无关名；也兼容带版本原名）
     ├── Programmer/                        # Gowin 烧录器（Windows：整个 Programmer 文件夹拷进来）
+    ├── openFPGALoader/openFPGALoader.exe  # Windows：快速烧写 + 夹具载入（Linux 用发行版的 openFPGALoader）
     └── libusb-1.0.dll                     # Windows：pyusb 后端（见下文跨平台）
 ```
 
 > **烧录器配置绝大多数是共享的**：16U3/32U3 用同一 Gowin Programmer，`cli`/`cli_windows`、
 > `cable_candidates`、`[programmer.flash]`（含 `image` 的 glob `firmware/dfu.*`、`spiaddr`）、
 > `[programmer.efuse]`（`key_file`）都集中在 `resources/programmer.toml` 给默认值。
-> **各 `products/<id>/programmer.toml` 通常只需一行 `device`**（唯一各产品不同、必填、
-> 无默认的字段——IDCODE 必须精确匹配）；需要时才按同名键覆盖（`cable_candidates` 整体
+> **各 `products/<id>/programmer.toml` 通常只需 `device` + `idcode` 两行**（各产品不同；
+> `device` 必填，`idcode` 供 JTAG 工位按读到的 IDCODE 自动识别产品）；需要时才按同名键覆盖（`cable_candidates` 整体
 > 覆盖，`flash`/`efuse` 按键合并）。解析优先级：产品档案 → 共享 → 代码内默认
 >（cli：Linux glob `Gowin-Programmer*.AppImage` / Windows `bin/Programmer/bin/programmer_cli.exe`；
 > cable：`[4,1,5,0]`；flash run：54）。
@@ -35,8 +37,8 @@ resources/
 ## 放置示例（Linux 工位）
 
 ```bash
-# sigrok-cli（来自 SLogic 发布包）
-ln -sf /path/to/sigrok-cli-SLogic-linux-x86_64-musl.AppImage resources/bin/sigrok-cli-linux-x86_64
+# sigrok-cli（来自 SLogic 发布包，须 2.3.0 及以上：旧版 4ch@1400M 会回卷、8ch@800M 收不到数据）
+ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigrok-cli-linux-x86_64
 
 # 应用固件与空板镜像
 cp firmware_v1.2.3.bin  resources/products/slogic16u3/firmware/app.bin
@@ -44,6 +46,9 @@ cp dfu.fs               resources/products/slogic16u3/firmware/dfu.fs
 
 # eFuse AES 密钥（机密，仅工位本地）
 cp efuse.ekey           resources/products/slogic16u3/firmware/efuse.ekey
+
+# 32U3 信号源夹具位流（产测工位）
+cp testgen.fs           resources/products/slogic32u3/firmware/testgen.fs
 ```
 
 ## programmer.toml：一条 CLI 驱动所有烧录器操作
@@ -56,7 +61,7 @@ cp efuse.ekey           resources/products/slogic16u3/firmware/efuse.ekey
 | 探测 / 读器件码 | `<cli> --device D --cable-index c --run 0` |
 | eFuse 读锁定位 | `<cli> --device D --cable-index c --keyread` |
 | 空板烧写 | `<cli> --device D --cable-index c --run <run> --fsFile <image> --spiaddr <addr>` |
-| eFuse 写入并锁定（不可逆） | `<cli> --device D --cable-index c --keywritefile --keyFile <key> --keylock` |
+| eFuse 写入并锁定（不可逆；`--keywritefile` 写入即自动锁定） | `<cli> --device D --cable-index c --keywritefile --keyFile <key>` |
 | DFU↔APP 保底切换 | `<cli> --device D --cable-index c <switch.dfu2app / app2dfu 参数>` |
 
 共享 `resources/programmer.toml`（给所有产品的默认值）：
@@ -70,7 +75,7 @@ schema_version = 1
 cli         = ["bin/Gowin-Programmer-x86_64.AppImage", "--programmer-cli"]
 cli_windows = ["bin/Programmer/bin/programmer_cli.exe"]
 timeout_s = 30
-cable_candidates = [4, 1, 5, 0]   # 逐个试，首个读到本 device 的即用（顺序只影响速度）
+cable_candidates = [5, 4, 1, 0]   # 逐个试，首个读到本 device（且 IDCODE 相符）的即用
 
 [programmer.flash]                # 空板烧写
 image = "firmware/dfu.*"          # glob 各产品 firmware/ 下的 dfu 位流（dfu.fs 或 dfu.bin）
@@ -87,7 +92,8 @@ key_file = "firmware/efuse.ekey"
 ```toml
 schema_version = 1
 [programmer]
-device = "GW5AT-15A"           # 唯一各产品不同、必填、无默认；32U3 = "GW5AT-60B"
+device = "GW5AT-15A"           # 各产品不同、必填、无默认；32U3 = "GW5AT-60B"
+idcode = 0x0001681B            # JTAG 工位据此识别产品；32U3 = 0x0001481B
 # 需要时才覆盖默认（cable_candidates 整体覆盖；[programmer.flash]/[programmer.efuse] 按键合并）：
 # cable_candidates = [5, 4, 1]
 # [programmer.switch]          # DFU↔APP 保底切换（产品不支持 USB RECONFIG 时）
@@ -95,12 +101,12 @@ device = "GW5AT-15A"           # 唯一各产品不同、必填、无默认；32
 # app2dfu = ["--run", "52", "--fsFile", "firmware/dfu.fs"]
 ```
 
-> **eFuse 与烧空板的关系**：DFU 位流是 AES 加密的，FPGA 须先把密钥写入 eFuse
-> 才能启动它（write），lock 只是防止密钥被读出。因此声明了 `[programmer.efuse]`
-> 时，烧空板序列自动带前置步骤 `blank:efuse`：读锁定位 → 已锁则跳过 → 未锁则
-> 写入并锁定（**不可逆**）→ 回读校验，随后才烧写 DFU 镜像；步骤结果计入测试
-> 报告。GUI 无独立 eFuse 按钮，锁定状态（⚪未知/🔓未锁/🔒已锁，来自顶栏 🔄
-> 扫描）显示在设备状态栏前缀。
+> **JTAG 工位**：布防后轮询 JTAG（只读），读到 IDCODE 即按各产品 `idcode` 识别产品，
+> 依次执行 `blank:efuse` → `blank:flash`。DFU 位流是 AES 加密的，FPGA 须先把密钥写入
+> eFuse 才能启动它，所以 eFuse 是烧 DFU 底包的前置步骤：读锁定位 → 已锁则跳过 → 未锁
+> 则写入（**不可逆**，写入即锁定）→ 回读确认已锁，随后才烧写 DFU 镜像。识别优先用
+> openFPGALoader `--detect`（按 FTDI 序列号只连烧录器、排除夹具的 BL702）；夹具插着时
+> 不会退回 Gowin `--run 0`（它只能按枚举序号选线，可能打开夹具并扰乱夹具的 SRAM 配置）。
 
 > - `cli` 第一个参数若能在产品目录内解析为文件则按文件用，否则按 PATH 命令查找，
 >   因此 Windows 只需把 `cli_windows` 指向本机 `programmer_cli.exe` 即可，其余不变；
@@ -109,6 +115,33 @@ device = "GW5AT-15A"           # 唯一各产品不同、必填、无默认；32
 >   仍需 Gowin 官方工具（Linux/Windows 均有 CLI）。
 
 ## product.toml：产品档案
+
+产测工位相关的主要段落（以 32U3 为例，完整注释见文件本身）：
+
+```toml
+[usb]
+links = ["10G", "5G"]      # 产测逐轮链路：先 10G 全测，提示换插 5G 口后再全测；第一轮是门槛
+
+[signal_source]            # 信号源夹具（Tang Nano 9K）；16U3 无此段，走外置固定信号源
+type     = "fpga"
+firmware = "firmware/testgen.fs"
+firmware_run = 2           # SRAM 载入（每轮重载，约 1.5 s）
+
+[[capture.threshold_groups]]   # 1.8 V 的 bank 3 通道另用 0.9 V 阈值再采一次
+channels = [20, 21, 22, 23, 24, 25]
+voltage_threshold_v = 0.9
+
+[[plan]]                   # 每个夹具图案模式一段；期望值由 slogicpt/patterns.py 按 RTL 推导
+mode    = 1
+label   = "4ch SPI @54 MHz"
+checks  = ["protocol"]
+configs = [                # 每轮链路一组配置（5G 下驱动限速：32U3 32ch 最高 100M）
+  { channels = 4, samplerate = "1400M", window_ms = 2, link = "10G" },
+  { channels = 4, samplerate = "800M",  window_ms = 2, link = "5G" },
+]
+```
+
+档案自检会检查：每轮链路下每个启用的模式都有对应配置（否则启动即报错，避免某轮悄悄少测）。
 
 > DFU↔APP 模式切换**无需任何脚本**，按可用方案自动分派（优先级从高到低）：
 > 1. `[mode_switch] usb_reconfig = true`（product.toml）：产品自身经 USB 控制
@@ -141,9 +174,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 | `未找到 sigrok-cli 二进制` | 按平台命名放入 `bin/`（见上文） |
 | `未找到 libusb 后端（libusb-1.0.dll）` | Windows：把 `libusb-1.0.dll` 放进 `bin/`（见跨平台一节），并给设备装 WinUSB 驱动 |
 
-> **GUI 资源路径可临时覆盖**：`测试参数`页的"资源路径覆盖"三行分别显示当前档案解析出的
-> app 固件 / DFU 镜像 / eFuse 密钥路径（灰字 placeholder），可点 `…` 浏览换用别的文件，
-> **仅本次会话生效、不写回 TOML**——方便临时验证不同固件/位流/密钥。
+夹具位流 `testgen.fs` 不在启动自检里：缺失时产测的「夹具 · 烧录信号发生器」一步报"找不到夹具位流"。
 
 ## 跨平台（Linux / Windows）
 
@@ -160,7 +191,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
   1. 把 `openFPGALoader.exe` 放到 `bin/openFPGALoader/`。**这是一个静态单文件 exe，
      不依赖任何第三方 DLL**（libusb/libftdi/zlib 及 C/C++ 运行库全部静态链接，仅用系统自带
      的 KERNEL32 / UCRT `api-ms-win-crt-*`），解压即用、无需再摆一堆 mingw64 DLL；
-  2. **一次性**给 FTDI 线缆 A 通道装 WinUSB 驱动——**推荐在 GUI「配置」页的
+  2. **一次性**给 FTDI 线缆 A 通道装 WinUSB 驱动——**推荐在 GUI 左栏的
      「环境准备」里点「部署」一键完成**（弹 UAC 授权，内部即调用同目录的 `wdi-simple.exe`）；
      也可命令行免点击：
      `bin\openFPGALoader\wdi-simple.exe -v 0x0403 -p 0x6010 -i 0 -t 0 -n "USB Serial Converter A (WinUSB)"`
@@ -191,7 +222,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
   - 缺后端时 GUI 顶栏会**显式红字告警**"未找到 libusb 后端"，不再静默显示"无设备"。
 
 - **Linux 权限**：libusb 通常能枚举设备，但读序列号 / 发 DFU↔APP 的 RECONFIG 控制传输
-  需要访问权限。缺 udev 规则时会报 `LIBUSB_ERROR_ACCESS`。**推荐在 GUI「配置」页的
+  需要访问权限。缺 udev 规则时会报 `LIBUSB_ERROR_ACCESS`。**推荐在 GUI 左栏的
   「环境准备」里点「部署」一键装好**（弹 polkit 授权，内部经 `pkexec` 写入下面的规则并
   `udevadm reload`）；点「移除」即删除。也可手动：
   ```
@@ -209,10 +240,10 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 | 项 | 放置 |
 |---|---|
 | Python（**仅源码运行时**需要，跑打包好的 exe 不需要） | **3.11 或更高**（依赖标准库 tomllib；低版本启动即报错退出） |
-| sigrok-cli | `bin/sigrok-cli-windows-x86_64.exe` |
+| sigrok-cli | `bin/sigrok-cli-windows-x86_64.exe`（SLogic 2.3.0 及以上） |
 | Gowin 烧录器 | 把 Gowin `Programmer` 文件夹拷进 `bin/Programmer/`（默认即用其 `bin/programmer_cli.exe`） |
 | libusb 后端 | `bin/libusb-1.0.dll`（推荐内置入库；`build.py` 自动打包进 exe）+ 设备 WinUSB 驱动（Zadig） |
-| 固件资源 | `products/<id>/firmware/` 下的 app.bin / dfu.* / efuse.ekey |
+| 固件资源 | `products/<id>/firmware/` 下的 dfu.* / efuse.ekey（JTAG 工位）、testgen.fs（32U3 产测工位） |
 
 ## 打包分发
 
@@ -228,8 +259,9 @@ SLogicPT/
 
 ## 产品档案要点
 
-- `usb.dfu_pid` 未知时可先不写，GUI 会提示 "DFU 未配置" 并禁用 DFU 与一键流程，其余功能不受影响；
+- `usb.dfu_pid`（16U3=0x30F1、32U3=0x30F2）供 DFU 引擎使用；应用固件 OTA 由批量网页工具负责，不在本工具；
 - `capture.samplerates` 必须填 sigrok 驱动实际支持的档位（`sigrok-cli -d <driver> --show` 查询），
   GUI 会再按 `channels × rate / 8 ≤ max_bandwidth_mbps` 过滤展示；
 - `firmware.app_flash_addr` 因产品而异，填错会导致固件无法启动；
-- `[[capture.tests]]` 是"一键全流程"逐组执行的测试点。
+- `[[capture.tests]]` 是没有 `[[plan]]`（无夹具）的产品在产测工位逐组执行的测试点（如 16U3 的外置固定信号源）；
+- `[usb] links` 决定产测轮数与门槛；`[[plan]]` 每组 `configs` 的 `link` 标注它属于哪一轮。

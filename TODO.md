@@ -1,27 +1,25 @@
 # TODO
 
-## 资源放置（消除 GUI 启动警告）— 交付负责同事
+## 待验证
 
-- [ ] `resources/firmware/slogic16u3/app.bin` — 16U3 应用固件
-- [ ] `resources/firmware/slogic32u3/app.bin` — 32U3 应用固件
-- [ ] `resources/blank_flash/slogic16u3/` 三个脚本：`gowin_flash.sh`、`usb_rst.sh`、`efuse_lock.sh`
-      （从产线机 `/home/sipeed007/gowin/scripts/` 迁入；flash 步骤也可改用 openFPGALoader，
-      manifest 中有示例）
-- [ ] `resources/blank_flash/slogic32u3/` 同上三个脚本 + DFU 位流（manifest 已建好）
-- [ ] Windows 工位如需：上述脚本的 `.bat` 版本（manifest 已写好 `argv_windows`）
+- [ ] **JTAG 工位上硬件**：Gowin 烧录器 + 空板（16U3、32U3 各一），验证按 IDCODE 自动识别 →
+      eFuse 写锁 → 烧 DFU 底包 → 拔板后自动等待下一块。重点看 `openFPGALoader --detect`
+      对 GW5AT 的输出能否被解析（`programmer._parse_ofl_idcodes`），以及 Windows 下 WinUSB 驱动时的表现。
+- [ ] **16U3 产测工位**：16U3 走 `[[capture.tests]]` + 外置固定信号源，`[usb] links = ["5G"]`，尚未在新工位流程下实测。
+- [ ] **Windows 打包版**：`python build.py` 出 exe，在 Windows 工位跑两个工位各一遍；确认内置
+      `libusb-1.0.dll` 能报出链路速率（libusb ≥ 1.0.22），否则会退回读 sigrok 扫描行的 `(10G)`。
 
 ## 固件 / 驱动侧
 
-- [ ] **32U3 分组模式输入前端全零**：切 `logic_channels=16/8/4` 后真实引脚信号全零
-      （阈值 0.3–3.0V 扫描无效；`pattern=Emulation` 数据完整 → 数据通路正常，
-      故障定位在分组模式的引脚采样/输入 mux）。修复后把 `slogic32u3.toml` 中
-      注释掉的 16ch@400M、8ch@800M 测试点启用
-- [ ] **sigrok 驱动实现 `conn=` 设备选择**（当前 "Not supported now!"）：
-      多台 SLogic 并接时 sigrok-cli 无法采集；工具已预留 conn 调用通路
-- [ ] 16U3 回插后实测 8ch@400M 分组（16U3 是否也有分组全零问题）
+- [ ] **链路降速命令**：产测 32U3 要求 10G 测完再降到 5G 重测，目前固件没有降速命令，
+      只能由操作员换插 5G 线。固件若在 `0x30` 设备管理扩展里加"以 Gen1 重新协商"，
+      把 `pipeline._await_link` 的人工换口改成发命令即可全自动。
+- [ ] **sigrok 驱动实现 `conn=` 设备选择**（2.3.0 仍回 "conn= is not supported for this driver"）：
+      支持后产测工位才能同机并测多台。
 
-## 工具 / 工位侧
+## 台架 / 夹具
 
-- [ ] Windows 机器上跑 `python build.py` 出 exe 并验证（PyInstaller 不支持交叉打包）；
-      工位需 WinUSB 驱动（Zadig）+ `libusb-1.0.dll`
-- [ ] 产线首板走一遍一键全流程（空板 → DFU → 应用 → 采样 PASS）并连续多板复跑
+- [ ] M5（夹具 27 路 1 kHz 同时翻转）对接地很敏感：经 USB Hub 接 5G 时出现地弹毛刺。
+      产线台架固定为 5G 线直插主机 + 夹具与分析仪之间短粗地线（见 README）。
+      可选的根治办法：夹具 RTL 把 M5 填充通道的边沿错开几微秒（期望频率/占空比不变）。
+- [ ] 16U3 的 eFuse 密钥 `products/slogic16u3/firmware/efuse.ekey` 在 JTAG 工位放置（机密，不入库）。
