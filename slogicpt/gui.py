@@ -539,9 +539,11 @@ class ProductionTestGUI(QWidget):
     def _set_profile(self, p: ProductProfile | None):
         self._profile = p
         self.product_label.setText(p.display_name if p else "—")
-        # before any board is recognised, show the station's steps for the
-        # first product (step ids are the same per station, labels close)
-        shown = p or (self.profiles[0] if self.profiles else None)
+        # before any board is recognised, preview the steps of the product that
+        # is actually online (the test station's steps differ per product: 32U3
+        # runs 10G + 5G pattern passes, 16U3 a 5G capture)
+        shown = p or self._preview_profile()
+        self._shown_id = shown.id if shown else None
         if shown is not None:
             self._rebuild_sequence(shown)
         if p is None:
@@ -557,6 +559,15 @@ class ProductionTestGUI(QWidget):
         default_rate = format_rate(p.default_samplerate_hz)
         if self.rate_combo.findText(default_rate) >= 0:
             self.rate_combo.setCurrentText(default_rate)
+
+    def _preview_profile(self) -> ProductProfile | None:
+        """Product whose steps to show while no board is recognised yet: the
+        analyzer currently online at the test station, else the first one."""
+        if self.station == "test":
+            online = getattr(self, "detected", None) or []
+            if online:
+                return online[0].profile
+        return self.profiles[0] if self.profiles else None
 
     def _on_station_changed(self, _idx):
         st = self.station_combo.currentData()
@@ -643,6 +654,11 @@ class ProductionTestGUI(QWidget):
         self.detected = device_watch.scan_devices(self.profiles)
         if self.station == "test":
             self._show_test_status()
+            # keep the preview in step with what is plugged in (idle only)
+            if (self._profile is None and not (self.pipeline and self.pipeline.running)
+                    and getattr(self, "_shown_id", None) != getattr(
+                        self._preview_profile(), "id", None)):
+                self._set_profile(None)
             self._test_arm_tick()
         self._update_enablement()
 
