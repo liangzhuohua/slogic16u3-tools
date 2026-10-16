@@ -643,4 +643,8 @@ ZH: dict[str, str] = {
         '没有 {link} 轮的采集配置',
     'plan M{mode} has no config for the {link} pass':
         'plan M{mode} 没有 {link} 轮的采集配置',
+    'Connect the board under test':
+        '请连接被测板',
+    'Click Start, then connect the board under test; it is recognised automatically':
+        '点击「开始」后接入被测板，自动识别产品',
 }

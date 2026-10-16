@@ -546,6 +546,12 @@ class ProductionTestGUI(QWidget):
         self._shown_id = shown.id if shown else None
         if shown is not None:
             self._rebuild_sequence(shown)
+        else:
+            # nothing to show steps for yet: say what to do instead
+            self._show_sequence_hint(
+                t("Connect the board under test") if self.station == "test" else
+                t("Click Start, then connect the board under test; it is "
+                  "recognised automatically"))
         if p is None:
             return
         self.channel_combo.blockSignals(True)
@@ -562,12 +568,26 @@ class ProductionTestGUI(QWidget):
 
     def _preview_profile(self) -> ProductProfile | None:
         """Product whose steps to show while no board is recognised yet: the
-        analyzer currently online at the test station, else the first one."""
+        analyzer online (test station) or the part last read on JTAG; None
+        when nothing is connected -- then no steps are shown at all."""
         if self.station == "test":
             online = getattr(self, "detected", None) or []
-            if online:
-                return online[0].profile
-        return self.profiles[0] if self.profiles else None
+            return online[0].profile if online else None
+        det = getattr(self, "_last_detect", None)
+        return det.profile if det is not None else None
+
+    def _show_sequence_hint(self, text: str):
+        while self.seq_container.count():
+            item = self.seq_container.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.step_rows.clear()
+        hint = QLabel(text)
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet("color:#777; font-size:15px; padding:24px;")
+        self.seq_container.addWidget(hint)
+        self.seq_container.addStretch(1)
 
     def _on_station_changed(self, _idx):
         st = self.station_combo.currentData()
@@ -798,6 +818,9 @@ class ProductionTestGUI(QWidget):
                 name=res.profile.display_name, code=res.idcode, via=res.via), "#2e7d32")
         changed = (prev is None) != (res is None) or (
             prev is not None and res is not None and prev.idcode != res.idcode)
+        if changed and self._profile is None and not (
+                self.pipeline is not None and self.pipeline.running):
+            self._set_profile(None)
         if changed and res is not None:
             self.log_signal.emit("[jtag] " + self.device_status_label.text())
         if not self.armed:
