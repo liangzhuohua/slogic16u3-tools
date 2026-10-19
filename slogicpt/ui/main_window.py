@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from PyQt5.QtCore import QSettings, QSize, QTimer
+from PyQt5.QtCore import QSettings, QSize, Qt, QTimer
 from PyQt5.QtGui import QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
     QAction, QActionGroup, QApplication, QFrame, QHBoxLayout,
@@ -29,7 +29,8 @@ from ..profiles import (
 from ..sigrok import SigrokCli, find_sigrok_binary
 from . import icons, report, theme
 from .station import StationController
-from .widgets import Chip, Drawer, ParamDialog, ResultCard, Stepper, button, label
+from .widgets import (Chip, Drawer, GripSplitter, ParamDialog, ResultCard, Stepper,
+                      button, label)
 
 
 @dataclass
@@ -118,9 +119,18 @@ class MainWindow(QMainWindow):
         sc.addWidget(self.stepper)
         body.addWidget(step_card)
 
+        # verdict card and drawer share the rest; the drawer's height is set by
+        # dragging the handle between them and remembered
         self.result_card = ResultCard()
-        body.addWidget(self.result_card, 1)
-        body.addWidget(self._build_drawer())
+        self.split = GripSplitter(Qt.Vertical)
+        self.split.setChildrenCollapsible(False)
+        self.split.setHandleWidth(12)
+        self.split.addWidget(self.result_card)
+        self.split.addWidget(self._build_drawer())
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 0)
+        self.split.splitterMoved.connect(self._remember_drawer_height)
+        body.addWidget(self.split, 1)
         root.addLayout(body, 1)
         self.setCentralWidget(central)
 
@@ -191,39 +201,22 @@ class MainWindow(QMainWindow):
         d = Drawer()
         mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
 
-        page = QWidget()
-        v = QVBoxLayout(page)
-        v.setContentsMargins(12, 4, 12, 12)
-        row = QHBoxLayout()
-        row.addWidget(label(t("Session report (paste directly into feedback):"), "caption"))
-        row.addStretch(1)
-        self.copy_btn = button(t("Copy Report"), "text", "copy", "primary")
-        self.copy_btn.clicked.connect(self._copy_report)
-        row.addWidget(self.copy_btn)
-        v.addLayout(row)
+        # each page's action sits in the tab bar, so the text gets the height
         self.report_box = QPlainTextEdit()
         self.report_box.setReadOnly(True)
         self.report_box.setFont(mono)
-        v.addWidget(self.report_box, 1)
-        d.add_page(t("Report"), page)
+        self.copy_btn = button(t("Copy Report"), "text", "copy", "primary",
+                               tip=t("Session report (paste directly into feedback):"))
+        self.copy_btn.clicked.connect(self._copy_report)
+        d.add_page(t("Report"), self._padded(self.report_box), self.copy_btn)
 
-        page = QWidget()
-        v = QVBoxLayout(page)
-        v.setContentsMargins(12, 4, 12, 12)
-        row = QHBoxLayout()
-        self.step_caption = label("", "caption")
-        row.addWidget(self.step_caption)
-        row.addStretch(1)
-        clear = button(t("Clear"), "text")
-        clear.clicked.connect(lambda: self.log_box.clear())
-        row.addWidget(clear)
-        v.addLayout(row)
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setFont(mono)
         self.log_box.setMaximumBlockCount(20000)
-        v.addWidget(self.log_box, 1)
-        d.add_page(t("Run Log"), page)
+        clear = button(t("Clear"), "text")
+        clear.clicked.connect(lambda: self.log_box.clear())
+        d.add_page(t("Run Log"), self._padded(self.log_box), clear)
 
         self.env_deploy_btn = self.env_remove_btn = None
         if env_setup.requirement():
@@ -248,14 +241,59 @@ class MainWindow(QMainWindow):
             v.addStretch(1)
             d.add_page(t("Environment Setup"), page)
 
+        self.drawer = d
+        d.toggled.connect(self._on_drawer_toggled)
         saved = QSettings().value("drawer", -1)
         try:
             d.open(int(saved))
         except (TypeError, ValueError):
             d.open(-1)
-        d.toggled.connect(lambda i: QSettings().setValue("drawer", i))
-        self.drawer = d
         return d
+
+    @staticmethod
+    def _padded(w: QWidget) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(12, 0, 12, 12)
+        v.addWidget(w)
+        return page
+
+    _DRAWER_DEFAULT = 0.6       # share of the card + drawer area when opened
+
+    def _on_drawer_toggled(self, idx: int):
+        QSettings().setValue("drawer", idx)
+        # deferred: on first build the splitter has no size yet
+        QTimer.singleShot(0, self._size_drawer)
+
+    def _size_drawer(self):
+        split = getattr(self, "split", None)
+        if split is None:
+            return
+        total = sum(split.sizes())
+        if not total:                 # not laid out yet (fresh rebuild): retry
+            if self.isVisible():
+                QTimer.singleShot(10, self._size_drawer)
+            return
+        open_ = self.drawer.current() >= 0
+        handle = split.handle(1)
+        handle.setEnabled(open_)
+        handle.setCursor(Qt.SplitVCursor if open_ else Qt.ArrowCursor)
+        if open_:
+            try:
+                h = int(QSettings().value("drawer_height", 0))
+            except (TypeError, ValueError):
+                h = 0
+            if h <= 0:
+                h = int(total * self._DRAWER_DEFAULT)
+            h = max(self.drawer.minimumSizeHint().height(),
+                    min(h, total - self.result_card.minimumHeight()))
+        else:
+            h = self.drawer.sizeHint().height()
+        split.setSizes([total - h, h])
+
+    def _remember_drawer_height(self, *_):
+        if self.drawer.current() >= 0:
+            QSettings().setValue("drawer_height", self.split.sizes()[1])
 
     def _rebuild(self):
         """Rebuild every widget (new language / theme) and restore the screen."""
@@ -425,8 +463,6 @@ class MainWindow(QMainWindow):
             self._close_switch_popup()
         if status == StepStatus.RUNNING:
             self._current_sid = sid
-            name = s.label if s else sid
-            self.step_caption.setText(t("Current step: {label}").format(label=name))
             if not self._prompt:
                 self._show_result("running", sid=sid)
 
@@ -527,7 +563,6 @@ class MainWindow(QMainWindow):
                 s.status = StepStatus.SKIPPED
                 self.stepper.set_status(sid, s.status, s.duration)
         self._prompt = ""
-        self.step_caption.setText("")
         if self.ctl.armed:
             self._caption = "remove"
         self._show_result("pass" if ok else "fail", elapsed=elapsed)
@@ -679,6 +714,10 @@ class MainWindow(QMainWindow):
             self.env_deploy_btn.setText(t("Deploy"))
             self.env_deploy_btn.setToolTip("")
             self.env_remove_btn.setToolTip("")
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(0, self._size_drawer)
 
     def closeEvent(self, e):
         self.ctl.disarm()

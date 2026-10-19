@@ -12,7 +12,8 @@ from PyQt5.QtGui import QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QDialog, QFrame, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-    QSizePolicy, QStackedWidget, QTableWidget, QVBoxLayout, QWidget,
+    QSizePolicy, QSplitter, QSplitterHandle, QStackedWidget, QTableWidget,
+    QVBoxLayout, QWidget,
 )
 
 from ..i18n import t
@@ -345,7 +346,7 @@ class ResultCard(QFrame):
         self._anim = QTimer(self)
         self._anim.setInterval(33)
         self._anim.timeout.connect(self._tick)
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(160)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(32, 20, 32, 24)
         lay.setSpacing(6)
@@ -447,6 +448,36 @@ class ResultCard(QFrame):
 
 # -------------------------------------------------------------------- drawer
 
+class _GripHandle(QSplitterHandle):
+    """Splitter handle drawn as a short centred pill (M3 drag handle);
+    nothing is drawn while disabled."""
+
+    def paintEvent(self, _e):
+        if not self.isEnabled():
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = 48, 4
+        r = QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+        tok = "outline" if self.underMouse() else "outline_variant"
+        p.setPen(Qt.NoPen)
+        p.setBrush(theme.qcolor(tok))
+        p.drawRoundedRect(r, 2, 2)
+
+    def enterEvent(self, e):
+        self.update()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self.update()
+        super().leaveEvent(e)
+
+
+class GripSplitter(QSplitter):
+    def createHandle(self):
+        return _GripHandle(self.orientation(), self)
+
+
 class Drawer(QFrame):
     """Bottom panel with tabs; clicking the open tab collapses it."""
 
@@ -466,17 +497,20 @@ class Drawer(QFrame):
         self._group = QButtonGroup(self)
         self._group.setExclusive(False)
         head.addStretch(1)
+        self._actions = QStackedWidget()      # the open page's action button
+        self._actions.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        head.addWidget(self._actions)
         self._chevron = button("", "icon", "expand_less")
         self._chevron.clicked.connect(self._toggle_last)
         head.addWidget(self._chevron)
         lay.addLayout(head)
         self.stack = QStackedWidget()
-        self.stack.setMinimumHeight(200)
-        lay.addWidget(self.stack)
+        self.stack.setMinimumHeight(120)
+        lay.addWidget(self.stack, 1)          # extra height goes to the page, not the tab bar
         self._last = 0
         self.stack.hide()
 
-    def add_page(self, title: str, widget: QWidget) -> int:
+    def add_page(self, title: str, widget: QWidget, action: QWidget | None = None) -> int:
         idx = len(self._tabs)
         b = button(title, "tab")
         b.setCheckable(True)
@@ -485,6 +519,7 @@ class Drawer(QFrame):
         self._group.addButton(b, idx)
         self._tabs.append(b)
         self.stack.addWidget(widget)
+        self._actions.addWidget(action or QWidget())
         return idx
 
     def current(self) -> int:
@@ -508,9 +543,11 @@ class Drawer(QFrame):
         if idx >= 0:
             self._last = idx
             self.stack.setCurrentIndex(idx)
+            self._actions.setCurrentIndex(idx)
             self.stack.show()
         else:
             self.stack.hide()
+        self._actions.setVisible(idx >= 0)
         self._chevron.setIcon(icons.icon("expand_more" if idx >= 0 else "expand_less",
                                          "on_surface_variant", 20))
         self.toggled.emit(idx)
