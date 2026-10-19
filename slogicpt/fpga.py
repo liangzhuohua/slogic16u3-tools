@@ -108,8 +108,8 @@ def is_fixture_serial(serial: str | None) -> bool:
 
 def fixture_ports() -> list[str]:
     """Serial ports of the fixture (empty when absent or pyserial is missing).
-    The single source for "is the fixture plugged in" -- pipeline, programmer
-    and the GUI all ask here."""
+    The single source for "is the fixture plugged in" -- pipeline and the GUI
+    both ask here."""
     try:
         return [p.device for p in find_ports() if is_fixture_serial(p.serial_number)]
     except Exception:                       # noqa: BLE001  (enumeration can fail mid-replug)

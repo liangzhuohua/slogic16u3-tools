@@ -62,7 +62,7 @@ class CaptureResult:
     elapsed_s: float
 
 
-# Kept under the old private name: programmer.py and older call sites use it.
+# Kept under the old private name for older call sites.
 _popen_kwargs = popen_kwargs
 
 

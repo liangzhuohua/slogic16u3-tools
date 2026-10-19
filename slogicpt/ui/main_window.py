@@ -14,14 +14,14 @@ from dataclasses import dataclass
 from PyQt5.QtCore import QSettings, QSize, QTimer
 from PyQt5.QtGui import QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
-    QAction, QActionGroup, QApplication, QButtonGroup, QFrame, QHBoxLayout,
+    QAction, QActionGroup, QApplication, QFrame, QHBoxLayout,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from .. import env_setup
 from ..i18n import LANGS, get_language, set_language, t
-from ..pipeline import STATION_LABELS, STATIONS, StepStatus, sequence_plan
+from ..pipeline import StepStatus, sequence_plan
 from ..profiles import (
     OUTPUT_DIR, ProductProfile, check_resources, format_rate, load_profiles,
     parse_rate,
@@ -148,21 +148,6 @@ class MainWindow(QMainWindow):
         h.addWidget(title)
         h.addSpacing(12)
 
-        seg = QHBoxLayout()
-        seg.setSpacing(0)
-        self.station_group = QButtonGroup(self)
-        self.station_btns = {}
-        for i, st in enumerate(STATIONS):
-            b = button(t(STATION_LABELS[st]), "segment")
-            b.setCheckable(True)
-            b.setProperty("first", i == 0)
-            b.setProperty("last", i == len(STATIONS) - 1)
-            b.setChecked(st == self.ctl.station)
-            b.clicked.connect(lambda _c, s=st: self._on_station(s))
-            self.station_group.addButton(b)
-            self.station_btns[st] = b
-            seg.addWidget(b)
-        h.addLayout(seg)
         h.addStretch(1)
 
         self.warn_chip = Chip("warning", clickable=True)
@@ -319,19 +304,12 @@ class MainWindow(QMainWindow):
                 t("libusb backend not found (libusb-1.0.dll): cannot enumerate "
                   "USB devices, DFU/APP detection disabled — see resources/README.md"),
                 "error", "warning")
-        elif ctl.station == "test":
-            if not ctl.detected:
-                self.device_chip.set_state(t("No analyzer detected"), "error", "usb")
-            else:
-                self.device_chip.set_state(
-                    t("Device: {dev}").format(dev=", ".join(str(d) for d in ctl.detected)),
-                    "success" if ctl.test_link_ok() else "warning", "usb")
-        elif ctl.last_detect is None and not ctl.armed:
-            self.device_chip.set_state(t("JTAG: detected after Start"), "neutral", "link")
+        elif not ctl.detected:
+            self.device_chip.set_state(t("No analyzer detected"), "error", "usb")
         else:
-            res = ctl.last_detect
-            tone = "success" if res is not None and res.profile is not None else "error"
-            self.device_chip.set_state(ctl.jtag_text(), tone, "link")
+            self.device_chip.set_state(
+                t("Device: {dev}").format(dev=", ".join(str(d) for d in ctl.detected)),
+                "success" if ctl.test_link_ok() else "warning", "usb")
         p = ctl.profile
         self.product_chip.set_state(
             t("Product: {name}").format(name=p.display_name if p else "—"),
@@ -344,9 +322,6 @@ class MainWindow(QMainWindow):
 
     def _on_state(self):
         ctl = self.ctl
-        for st, b in self.station_btns.items():
-            b.setChecked(st == ctl.station)
-            b.setEnabled(ctl.idle)
         if ctl.busy or ctl.armed:
             self.action_btn.setText(t("Stop"))
             self.action_btn.setIcon(icons.icon("stop", "on_error", 20))
@@ -399,13 +374,10 @@ class MainWindow(QMainWindow):
         if shown is None:
             self._steps.clear()
             self._fixture_need = {}
-            self.stepper.show_hint(
-                t("Connect the board under test") if ctl.station == "test" else
-                t("Click Start, then connect the board under test; it is "
-                  "recognised automatically"))
+            self.stepper.show_hint(t("Connect the board under test"))
             return
         old = self._steps if keep_status else {}
-        plan = sequence_plan(shown, ctl.station)
+        plan = sequence_plan(shown)
         self._steps = {}
         has_fixture = shown.signal_source.is_fpga
         self._fixture_need = {}
@@ -424,28 +396,19 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _fixture_need_of(sid: str, has_fixture: bool) -> bool | None:
-        """Whether the step needs the fixture (Tang Nano 9K) plugged in (True),
-        unplugged (False) or does not care (None)."""
+        """True when the step needs the fixture (Tang Nano 9K) plugged in."""
         if not has_fixture:
             return None
-        if sid.startswith("signal"):
-            return True
-        if sid.startswith(("blank", "wait", "flash", "switch")):
-            return False
-        return None
+        return True if sid.startswith("signal") else None
 
     def _render_fixture_reqs(self):
-        """Show a step's fixture requirement only while the bench contradicts
-        it -- a permanent "unplug the 9K" under every JTAG step read like the
-        cause of whatever failed there."""
+        """Show a step's fixture requirement only while the fixture is missing;
+        a permanent hint under every step reads like the cause of whatever
+        failed there."""
         present = self.ctl.fixture_present
         for sid, need in self._fixture_need.items():
-            text = ""
-            if need is True and not present:
-                text = t("Requires Tang Nano 9K plugged in")
-            elif need is False and present:
-                text = t("Requires Tang Nano 9K unplugged")
-            self.stepper.set_req(sid, text)
+            self.stepper.set_req(sid, t("Requires Tang Nano 9K plugged in")
+                                 if need and not present else "")
 
     def _on_step(self, sid: str, status: StepStatus):
         s = self._steps.get(sid)
@@ -485,12 +448,11 @@ class MainWindow(QMainWindow):
                    "next": t("Waiting for the next board…")}.get(self._caption, "")
         if kind == "idle":
             self.result_card.set_state(
-                "idle", t("Standby"), t("Choose the station and click Start"))
+                "idle", t("Standby"), t("Click Start, then connect the board under "
+                                        "test; it is recognised automatically"))
         elif kind == "ready":
             self.result_card.set_state(
-                "ready", t("Waiting for the board under test…"),
-                t(STATION_LABELS[ctl.station]),
-                icon="usb" if ctl.station == "test" else "link")
+                "ready", t("Waiting for the board under test…"), icon="usb")
         elif kind == "running":
             s = self._steps.get(d.get("sid", ""))
             self.result_card.set_state(
@@ -518,16 +480,6 @@ class MainWindow(QMainWindow):
             self.ctl.arm()
             if self.ctl.armed:
                 self._show_result("ready")
-
-    def _on_station(self, st: str):
-        if not self.ctl.set_station(st):
-            self._on_state()          # refused (busy): restore the checked button
-            return
-        self.report_box.clear()
-        self._caption = ""
-        self._show_result("idle")
-        self._layout_steps(force=True)
-        self._on_devices()
 
     def _on_language(self, code: str):
         if code == get_language():
@@ -582,7 +534,7 @@ class MainWindow(QMainWindow):
         steps = [(s.status, f"{i}. {s.label}", s.duration)
                  for i, s in enumerate(self._steps.values(), start=1)]
         self.report_box.setPlainText(report.render(
-            ok, detail, elapsed, self.ctl.station, self.ctl.profile,
+            ok, detail, elapsed, self.ctl.profile,
             self.ctl.detected, steps))
 
     def _on_prompt(self, text: str):

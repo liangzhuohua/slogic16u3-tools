@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from ..i18n import t
-from ..pipeline import STATION_LABELS, StepStatus
+from ..pipeline import StepStatus
 
 # English keys; translated where read so a language switch picks them up.
 STATUS_TEXT = {
@@ -18,13 +18,12 @@ STATUS_TEXT = {
 }
 
 
-def render(ok: bool, detail: str, elapsed: float, station: str, profile,
+def render(ok: bool, detail: str, elapsed: float, profile,
            devices: list, steps: list[tuple[StepStatus, str, float | None]]) -> str:
-    """steps: (status, "n. name", duration) in station order."""
+    """steps: (status, "n. name", duration) in run order."""
     lines = [
         "==== " + t("SLogic Production Test Report") + " ====",
         t("Time: {ts}").format(ts=time.strftime('%Y-%m-%d %H:%M:%S')),
-        t("Station: {s}").format(s=t(STATION_LABELS[station])),
         (t("Product: {name} ({id})").format(name=profile.display_name, id=profile.id)
          if profile else t("Product: -")),
         t("Device: {devs}").format(

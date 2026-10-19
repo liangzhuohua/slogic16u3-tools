@@ -123,7 +123,7 @@ def run_reparented(argv: list[str], cwd: str | None, timeout_s: float,
         # 注意 `%errorlevel%` 和 `>` 之间**必须有空格**：写成 `echo %errorlevel%>`
         # 时展开成 `echo 7> "rc.txt"`，cmd 会把 `7>` 当成"重定向句柄 7"，于是
         # rc.txt 是空的、上层永远拿到 rc=-1（实测两种创建方式都一样）。
-        # 这个 bug 会让依赖 rc 的判据（_write_ok：Gowin 烧录/切换）恒判失败。
+        # 这个 bug 会让依赖 rc 的判据恒判失败。
         body.append(f'echo %errorlevel% > "{rcf}"')
         # cmd reads a .bat in the ANSI code page; paths are ASCII in practice
         bat.write_text("\r\n".join(body) + "\r\n", encoding="mbcs",
@@ -134,7 +134,7 @@ def run_reparented(argv: list[str], cwd: str | None, timeout_s: float,
         # 为什么不能直接让 WMI 创建 `cmd.exe /c bat`：cmd.exe 是控制台程序，而 WMI
         # 的 Win32_Process.Create 是在调用者的交互桌面上建进程 —— 于是每跑一次就弹
         # 出一个命令窗口再消失。打包成 --windowed 后没有父控制台可继承，这个现象尤
-        # 其明显（实测：自动检测每 2.5 秒跑一次 programmer_cli，屏幕上就一直闪黑框）。
+        # 其明显（实测：周期性运行 programmer_cli 时，屏幕上就一直闪黑框）。
         #
         # wscript.exe 是 GUI 子系统程序，自己不产生控制台；VBS 里用
         # WshShell.Run(cmd, 0, True) 的 0 = 窗口隐藏，于是全程无窗口。

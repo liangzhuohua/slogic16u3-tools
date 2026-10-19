@@ -4,7 +4,7 @@ Two platform-specific concerns, each with a symmetric deploy / remove so the
 operator never has to open a terminal:
 
 * Linux  -- a udev rule granting the logged-in operator access to the SLogic
-  USB device (VID 0x359F) and the FTDI JTAG cable (0x0403:0x6010 used by
+  USB device (VID 0x359F) and the fixture's FTDI (0x0403:0x6010 used by
   openFPGALoader).  Without it libusb can *enumerate* but ctrl_transfer
   (DFU<->APP), serial reads and flashing fail with LIBUSB_ERROR_ACCESS.
   Needs root -> runs via pkexec (graphical polkit prompt).
@@ -33,7 +33,7 @@ from .profiles import PLATFORM_KEY, RESOURCES_DIR
 
 # --- identities -------------------------------------------------------------
 SLOGIC_VID = "359f"                 # SLogic DFU + APP
-FTDI_VID, FTDI_PID = "0403", "6010"  # FT2232 JTAG cable (openFPGALoader/Gowin)
+FTDI_VID, FTDI_PID = "0403", "6010"  # fixture BL702 (FT2232 emulation), openFPGALoader
 WINUSB_NAME = "USB Serial Converter A (WinUSB)"
 
 # --- Linux udev -------------------------------------------------------------
@@ -42,7 +42,7 @@ UDEV_RULES = f"""\
 # SLogic logic analyzer -- operator access (installed by the SLogic PT tool)
 # SLogic USB device (DFU + APP), VID 0x359F
 SUBSYSTEM=="usb", ATTR{{idVendor}}=="{SLOGIC_VID}", MODE="0660", TAG+="uaccess"
-# FTDI JTAG cable used by openFPGALoader / Gowin for blank-flash, 0x0403:0x6010
+# fixture FTDI (Tang Nano 9K BL702) used by openFPGALoader to load the fixture, 0x0403:0x6010
 SUBSYSTEM=="usb", ATTR{{idVendor}}=="{FTDI_VID}", ATTR{{idProduct}}=="{FTDI_PID}", MODE="0660", TAG+="uaccess"
 """
 

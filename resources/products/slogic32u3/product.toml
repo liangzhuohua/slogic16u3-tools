@@ -39,8 +39,8 @@ links = ["10G", "5G"]
 # 好处是夹具状态每次都确定 —— FPGA 会因拔插探针线的小掉电丢失配置，
 # 丢后引脚全部悬空、分析仪全通道读高。
 #
-# ⚠️ 夹具只在产测工位使用，JTAG 烧录在另一个工位。Gowin 编程器的 JTAG 操作会
-#    干扰夹具 FPGA 的 SRAM 配置，所以两者不要在同一台架上混用。
+# ⚠️ 不要在产测台架上做 JTAG 烧录：Gowin 编程器的 JTAG 操作会干扰夹具 FPGA
+#    的 SRAM 配置。
 [signal_source]
 type             = "fpga"
 serial           = "auto"
@@ -130,7 +130,6 @@ wait_dfu_device_s = 30
 wait_app_device_s = 30
 dfu_flash_s = 600
 capture_s = 120
-blank_flash_step_s = 120
 
 # ===========================================================================
 # 测试计划：7 个模式，每个模式 10G / 5G 各一组配置（[usb] links 逐轮执行）

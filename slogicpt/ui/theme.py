@@ -214,17 +214,6 @@ QPushButton[variant="icon"] {{ border: none; border-radius: 18px; padding: 6px;
 QPushButton[variant="icon"]:hover {{ background: {mix('surface_container', 'on_surface', 0.08)}; }}
 QPushButton[variant="icon"]::menu-indicator {{ image: none; width: 0; }}
 
-QPushButton[variant="segment"] {{ border-radius: 0; border: 1px solid {c['outline']};
-    padding: 6px 16px; color: {c['on_surface']}; font-weight: 500; }}
-QPushButton[variant="segment"][first="true"] {{ border-top-left-radius: 18px;
-    border-bottom-left-radius: 18px; }}
-QPushButton[variant="segment"][last="true"] {{ border-top-right-radius: 18px;
-    border-bottom-right-radius: 18px; border-left: none; }}
-QPushButton[variant="segment"]:checked {{ background: {c['primary_container']};
-    color: {c['on_primary_container']}; font-weight: 600; }}
-QPushButton[variant="segment"]:disabled {{ color: {disabled_fg}; }}
-QPushButton[variant="segment"]:checked:disabled {{ background: {disabled_bg}; }}
-
 QPushButton[variant="tab"] {{ border: none; border-radius: 0; padding: 10px 18px;
     color: {c['on_surface_variant']}; font-weight: 500;
     border-bottom: 3px solid transparent; }}

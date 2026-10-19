@@ -1,25 +1,25 @@
 # SLogic-tools（产测工具）
 
 Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品**：SLogic16U3、SLogic32U3 及未来产品。
-新增产品 = 在 `resources/products/` 加一份 TOML 档案 + 按约定放置固件与刷机资源，**无需改代码**（详见 `resources/README.md`）。
+新增产品 = 在 `resources/products/` 加一份 TOML 档案 + 按约定放置固件与夹具位流，**无需改代码**（详见 `resources/README.md`）。
 
-## 产线三个工位
+## 产线工位
 
 | 工位 | 工具 | 接什么 | 做什么 |
 |---|---|---|---|
-| ① JTAG 烧录 | 本工具 · 「JTAG 烧录」 | Gowin 烧录器 + 空板（**不要插夹具**） | 按 JTAG IDCODE 自动识别产品 → eFuse 写入 AES 密钥（写入即锁定）→ 烧 DFU 底包 |
-| ② OTA 烧应用固件 | 批量 OTA 网页工具（另行提供） | 多块 DFU 板（USB2 即可） | 并行烧 app 固件；前提是①已完成（DFU 底包 + 已加密） |
-| ③ 产测 | 本工具 · 「产测」 | 被测板（运行 app 固件）+ 信号源夹具 + 一个 5G 口/Hub | 32U3：10G 链路全测 → 提示换插 5G 口 → 5G 链路再全测，两轮都过才 PASS；16U3：5G 链路测一轮 |
+| ① JTAG 烧录 | 另行提供（不在本工具内） | Gowin 烧录器 + 空板 | eFuse 写入 AES 密钥 → 烧 DFU 底包 |
+| ② OTA 烧应用固件 | 批量 OTA 网页工具 https://slogic.sipeed.com/ota/ | 多块 DFU 板（USB2 即可） | 并行烧 app 固件；前提是①已完成（DFU 底包 + 已加密） |
+| ③ 产测 | **本工具** | 被测板（运行 app 固件）+ 信号源夹具 + 一个 5G 口 | 32U3：10G 链路全测 → 提示换插 5G 口 → 5G 链路再全测，两轮都过才 PASS；16U3：5G 链路测一轮 |
 
-本工具是**一个程序**，在顶栏选工位（会记住上次的选择）。点 **开始** 即"布防"：每接入一块被测板，
-工具自动识别产品并跑完该工位全部步骤；结论以大卡片显示在窗口中央，直到下一块板接入。点 **停止** 撤防（运行中则取消）。
+本工具只负责③产测。点 **开始** 即"布防"：每接入一块被测板，
+工具自动识别产品并跑完全部步骤；结论以大卡片显示在窗口中央，直到下一块板接入。点 **停止** 撤防（运行中则取消）。
 撤防时把鼠标移到步骤条上的某一步、点击即可对最近识别的板单步执行；采样步骤下方的「测试参数」打开自定义采集（工程用）。
 
-界面：顶栏（工位 / 语言 / 主题 / 开始·停止）→ 产品与设备状态 → 横向步骤条 → 中央结论卡片
+界面：顶栏（语言 / 主题 / 开始·停止）→ 产品与设备状态 → 横向步骤条 → 中央结论卡片
 （待机 / 等待接入 / 执行中 / 需要操作 / PASS / FAIL）→ 底部可展开的「报告 / 运行日志 / 环境准备」。
 主题默认跟随系统明暗，也可在顶栏手动切换（会记住）；切换语言或主题不会丢失当前步骤状态、结论与日志。
 
-- **产测工位逐台测**：sigrok-cli 无法在多台分析仪中选定一台（驱动不支持 `conn=`），所以主机上同时只能有一台被测分析仪；多于一台时工具会提示而不开测。
+- **逐台测**：sigrok-cli 无法在多台分析仪中选定一台（驱动不支持 `conn=`），所以主机上同时只能有一台被测分析仪；多于一台时工具会提示而不开测。
 - **逐轮链路测试**（`product.toml` 的 `[usb] links`，如 32U3 = `["10G", "5G"]`）：第一轮是门槛，达不到直接 FAIL、不进入图案测试；之后每轮在结论卡片上提示把线换到对应速率的口，检测到该速率重新枚举后自动继续（固件暂无降速命令，换口是人工的）。各轮用各自的采集配置（`[[plan]]` 的 `configs` 带 `link` 标签：5G 下驱动限速，32U3 为 4ch@800 / 8ch@400 / 16ch@200 / 32ch@100）。
 - 5G 轮的接法：**换一根只支持 5G 的线直插主机口**（或主机原生 USB 3.0 口），**不要经过 Hub**。实测经 Hub 接 5G 时，M5（夹具 27 路 1 kHz 同时翻转）会因地弹在所有通道同一时刻出约 30 ns 毛刺，恒低的 CH1 被读成高、1 kHz 读成 2 kHz；同一块板直连则 10G/5G 都干净。
 - 夹具 GND 与分析仪 GND 之间要有**短而粗的地线**。M5 时过时不过先查接地：M5 下用 16ch@200M、1.5 V 采 4 ms，恒低的 CH1 应 0 个边沿、1 kHz 的 CH5 应 8 个。
@@ -36,9 +36,8 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   │   ├── theme.py     #     明/暗色 token、调色板与样式表、系统明暗检测
 │   │   └── icons.py     #     内嵌 SVG 图标
 │   ├── procutil.py      #   跨平台子进程：隐藏窗口、杀进程树、超时/取消运行器
-│   ├── pipeline.py      #   流程引擎：工位步骤表、链路门槛、超时/人工提示
+│   ├── pipeline.py      #   流程引擎：步骤表、链路门槛、超时/人工提示
 │   ├── profiles.py      #   产品档案加载/校验/资源自检
-│   ├── programmer.py    #   外置 JTAG 烧录器：IDCODE 识别产品、eFuse、烧 DFU 底包
 │   ├── device_watch.py  #   USB 设备检测（产品 + APP/DFU 模式 + 链路速率）
 │   ├── patterns.py      #   夹具图案的期望值（唯一权威，由 RTL 推导）
 │   ├── checks.py        #   判定层：逐通道 + 结构化判定（不滤波；判不了即 FAIL）
@@ -62,14 +61,14 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 python -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt                     # 需 Python 3.11+
 # 放置资源（sigrok-cli / 固件 / 夹具位流），见 resources/README.md
-python -m slogicpt                                  # 启动 GUI，选工位后点「开始」
+python -m slogicpt                                  # 启动 GUI，点「开始」
 ```
 
 台架要点：
 
 - **sigrok-cli 须用 SLogic 2.3.0 及以上**：旧版在 4ch@1400M 会回卷到 1600M、8ch@800M 收不到数据。
-- 工位①与③的硬件分开：夹具（BL702）和 Gowin 烧录器都是 FTDI `0403:6010`，Gowin `programmer_cli` 只能按枚举序号选线，二者不能混插。
-- 产品识别：JTAG 工位读 IDCODE 与各产品 `programmer.toml` 的 `idcode` 比对；产测工位按 USB PID 识别。
+- 产测台架不要接 Gowin 烧录器：它和夹具（BL702）同为 FTDI `0403:6010`，其 JTAG 操作还会干扰夹具 FPGA 的 SRAM 配置。
+- 产品识别：按 USB PID。
 
 ## 命令行
 
@@ -77,7 +76,7 @@ python -m slogicpt                                  # 启动 GUI，选工位后�
 python -m slogicpt.dfu.spi_flash firmware.bin --pid 0x30F1 --addr 0x0   # DFU 烧写 CLI（工程用）
 python -m slogicpt.profiles      # 档案加载与资源自检
 python -m slogicpt.device_watch  # 设备插拔监视（含链路速率）
-python -m slogicpt.pipeline      # 流程引擎自测（工位步骤表、链路判据）
+python -m slogicpt.pipeline      # 流程引擎自测（步骤表、链路判据）
 python -m slogicpt.patterns      # 夹具图案期望值自测
 python -m slogicpt.checks        # 判定层自测
 ```

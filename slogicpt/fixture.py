@@ -1,4 +1,4 @@
-"""Load the Tang Nano 9K fixture bitstream over JTAG (Gowin programmer CLI).
+"""Load the Tang Nano 9K fixture bitstream (openFPGALoader; Gowin programmer CLI fallback).
 
 WHY THIS RUNS AT THE START OF EVERY TEST RUN
 --------------------------------------------
@@ -30,6 +30,7 @@ The profile picks the index via `signal_source.firmware_run`.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -61,9 +62,38 @@ def find_programmer(explicit: list[str] | None = None) -> Path | None:
 
 
 def _openfpga_exe() -> Path | None:
-    """openFPGALoader 的位置（按平台挑，见 programmer.openfpga_exe）。"""
-    from .programmer import openfpga_exe
-    return openfpga_exe()
+    """openFPGALoader 的位置：产测资源里自带的一份，按平台挑；Linux 再退到 PATH
+    （台架用发行版包）。资源目录里只有 Windows 的 .exe 时，Linux 绝不能选它——
+    执行失败会被吞掉，最后只报一句误导性的"找不到设备"。"""
+    import shutil
+    from .profiles import RESOURCES_DIR
+    bundled = RESOURCES_DIR / "bin" / "openFPGALoader"
+    if procutil.IS_WINDOWS:
+        cand = bundled / "openFPGALoader.exe"
+        return cand if cand.is_file() else None
+    cand = bundled / "openFPGALoader"
+    if cand.is_file():
+        return cand
+    found = shutil.which("openFPGALoader")
+    return Path(found) if found else None
+
+
+def _ftdi_rows(exe: Path) -> list[tuple[str, str, str]] | None:
+    """`openFPGALoader --scan-usb` 里所有 0403:6010 行 -> (manufacturer, serial,
+    product)；None = 运行失败。"""
+    try:
+        proc = subprocess.run([str(exe), "--scan-usb"], capture_output=True,
+                              timeout=20, **procutil.popen_kwargs())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # 列格式：Bus device vid:pid probe_type manufacturer serial product
+    #  001 008  0x0403:0x6010 FTDI2232 SIPEED 2025030317 USB Debugger
+    rows = []
+    for line in (proc.stdout or "").splitlines():
+        m = re.search(r"0x0403:0x6010\s+\S+\s+(\S+)\s+(\S+)\s+(.+?)\s*$", line)
+        if m:
+            rows.append((m.group(1), m.group(2), m.group(3).strip()))
+    return rows
 
 
 # Gowin op indexes that target the GW1NR's embedded flash (5 = embFlash
@@ -82,7 +112,7 @@ def _flash_openfpga(bitstream: Path, run: int, log, timeout_s: float,
     "CRC check : FAIL" 后夹具不应答——与档案 firmware_run=2(SRAM) 的本意不符。
 
     序列号取"含 BL702 的那个"——夹具 Tang Nano 的 BL702 会把它报在自己的序列号
-    里，本产品的 Gowin 烧录器不会。这与 programmer.py 挑烧录器的判据互为反面。
+    里，同为 0403:6010 的 Gowin 烧录器不会。
     """
     exe = _openfpga_exe()
     if exe is None:
@@ -117,12 +147,11 @@ def _flash_openfpga(bitstream: Path, run: int, log, timeout_s: float,
 
 
 def _fixture_ftdi_serial(log) -> str | None:
-    """夹具 BL702 的 FTDI 序列号，问 openFPGALoader 自己要（解析在 programmer）。"""
-    from .programmer import _programmer_ftdi_rows
+    """夹具 BL702 的 FTDI 序列号，问 openFPGALoader 自己要。"""
     exe = _openfpga_exe()
     if exe is None:
         return None
-    rows = _programmer_ftdi_rows([str(exe)])
+    rows = _ftdi_rows(exe)
     if rows is None:
         return None
     for _, serial, _ in rows:
@@ -192,10 +221,8 @@ def flash(bitstream: Path, run: int, log_cb=None, *,
 
     # 打包（PyInstaller frozen）后必须经 WMI 重定父再启动 programmer_cli，否则它
     # 只要祖先链里有任何 frozen 进程就报 "Error: MAINCMD module not found." 并以
-    # 非零退出。programmer._run_argv 早就为此走了 winexec.run_reparented，而这条
-    # 夹具路径当初是直接 subprocess.run —— 从源码跑一切正常，**打包后就必然失败**
-    # （实测：源码版夹具烧写正常，打包版 5 秒即报 could not load the signal
-    #  generator）。这里补上同一条路径。
+    # 非零退出（实测：源码版夹具烧写正常，打包版 5 秒即报 could not load the
+    # signal generator）。
     from . import winexec
 
     reparented = winexec.needs_reparent()

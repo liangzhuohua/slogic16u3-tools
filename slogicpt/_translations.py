@@ -69,10 +69,8 @@ ZH: dict[str, str] = {
     "Missing: {items}": "缺少: {items}",
     # fixture plug/unplug guidance (scan button & full-test setup)
     "Requires Tang Nano 9K plugged in": "需插着 Tang Nano 9K",
-    "Requires Tang Nano 9K unplugged": "需拔掉 Tang Nano 9K",
     # switch button
     # actions / logs
-    "exception: {e}": "异常: {e}",
     # env buttons
     "Redeploy": "重新部署",
     "Rule exists; rewrite to update": "规则已存在，可重新写入以更新",
@@ -104,8 +102,6 @@ ZH: dict[str, str] = {
         "如需反馈问题，请复制本报告并附上运行日志相关片段。",
 
     # ---- pipeline.py -----------------------------------------------------
-    "Blank-flash · eFuse key write-lock": "烧空板 · eFuse 密钥写锁",
-    "Blank-flash · write DFU image": "烧空板 · 烧写 DFU 镜像",
     "Wait for DFU device": "等待 DFU 设备",
     "DFU flash app firmware": "DFU 烧写应用固件",
     "Switch to APP mode": "切换到 APP 模式",
@@ -119,21 +115,6 @@ ZH: dict[str, str] = {
     "Flow aborted: {e}": "流程中止: {e}",
     "Flow exception:": "流程异常:",
     "Flow exception, see log for details": "流程异常，详见日志",
-    "eFuse already locked (key written), skipping write-lock":
-        "eFuse 已锁定（密钥已写入），跳过写锁",
-    "eFuse write-lock": "eFuse 写锁",
-    " (already locked)": "（已锁定）",
-    "Cannot confirm eFuse state (external programmer not connected / cable fault?), aborting":
-        "无法确认 eFuse 状态（外置烧录器未连接/线缆异常？），中止",
-    " (state unknown)": "（状态未知）",
-    "eFuse not locked: writing AES key and locking (prerequisite for encrypted "
-    "DFU boot, irreversible)...":
-        "eFuse 未锁：写入 AES 密钥并锁定（加密 DFU 启动前提，不可逆）…",
-    " (write failed)": "（写入失败）",
-    " (readback confirmed locked)": "（回读确认已锁定）",
-    " (readback did not confirm locked)": "（回读未确认锁定）",
-    "eFuse readback did not confirm locked, judged as failed": "回读 eFuse 未确认锁定，判定失败",
-    "Blank-flash DFU image": "烧空板 DFU 镜像",
     "Waiting for {what} device ({vid}:{pid})...": "等待 {what} 设备 ({vid}:{pid})...",
     "{what} device ready": "{what} 设备已就绪",
     " (after manual intervention)": "（人工介入后）",
@@ -148,8 +129,6 @@ ZH: dict[str, str] = {
     "Sending RECONFIG to switch to {mode} mode ({vid}:{pid})...":
         "发送 RECONFIG 切换到 {mode} 模式 （{vid}:{pid}）...",
     "RECONFIG switch failed: {e}, trying fallback...": "RECONFIG 切换失败: {e}，尝试保底方案…",
-    "External programmer switch failed, falling back to manual...":
-        "外置烧录器切换失败，转人工…",
     "Please press the onboard MODE button to switch {name} to {mode} mode; it "
     "will continue automatically once the target-mode device is detected":
         "请按板载 MODE 按键，将 {name} 切换到 {mode} 模式；检测到目标模式设备后自动继续",
@@ -195,71 +174,17 @@ ZH: dict[str, str] = {
     "got": "实测",
     "want": "应为",
     "ok in group": "组内正常",
-    # ---- 夹具插拔提示（夹具和被测板烧录器共用 FTDI 0403:6010）----
-    "Please UNPLUG the signal-generator fixture (Tang Nano 9K) and wait -- "
-    "it shares the FTDI ID with the board's programmer, so this step cannot "
-    "address the board while the fixture is connected":
-        "请【拔掉】信号发生器夹具（Tang Nano 9K）的 USB，然后等待 —— "
-        "它和被测板的烧录器共用同一个 FTDI 标识，夹具插着时这一步寻址不到被测板",
+    # ---- 夹具插入提示 ----------------------------------------------------
     "Please PLUG IN the signal-generator fixture (Tang Nano 9K) and wait -- "
     "the flow continues by itself":
         "请【插上】信号发生器夹具（Tang Nano 9K）的 USB，然后等待 —— 流程会自动继续",
     "Fixture detected ({p}), continuing": "已检测到夹具（{p}），继续",
-    "Fixture unplugged, continuing": "夹具已拔下，继续",
     "still waiting ({s}s): {m}": "仍在等待（{s} 秒）：{m}",
 
-    # ---- programmer.py ---------------------------------------------------
+    # ---- fixture.py ------------------------------------------------------
     "Launch failed: {e}": "启动失败: {e}",
-    "cancelled": "已取消",
-    "timed out ({secs}s)": "超时 ({secs}s)",
-    "Programmer CLI not found (programmer.cli undeclared and no default AppImage)":
-        "未找到烧录器 CLI（programmer.cli 未声明且无默认 AppImage）",
-    "Programmer CLI not found": "未找到烧录器 CLI",
-    "Trying cable-index {cable} (device={dev}) to read the IDCODE...":
-        "尝试 cable-index {cable}（device={dev}）读器件码…",
-    "Result: external programmer connected, device={dev}, cable-index={cable}, eFuse={efuse}":
-        "结果：外置烧录器已连接，device={dev}，cable-index={cable}，eFuse={efuse}",
-    "Result: no device read on any cable -- external programmer not connected or unpowered":
-        "结果：未在任何 cable 上读到器件——外置烧录器未连接或未上电",
-    "No device read on any cable (external programmer not connected?)":
-        "未在任何 cable 上读到器件（外置烧录器未连接？）",
-    "No cable-index provided, probing first...": "未提供 cable-index，先探测…",
-    "programmer.toml declares no [programmer.flash]; cannot flash":
-        "programmer.toml 未声明 [programmer.flash]，无法烧录",
-    "DFU image missing: {img}": "DFU 镜像缺失: {img}",
-    "Blank-flash (custom command, watchdog {secs}s): ": "烧空板（自定义命令，看门狗 {secs}s）: ",
-    "flash complete": "烧录完成",
-    "flash failed": "烧录失败",
-    "Programmer CLI not found; cannot flash": "未找到烧录器 CLI，无法烧录",
-    "No usable cable found; external programmer not connected?":
-        "未找到可用 cable，外置烧录器未连接？",
-    "Blank-flash: device={device} cable-index={cable} run={run} --fsFile={fsfile} "
-    "spiaddr={spiaddr} (watchdog {secs}s)":
-        "烧空板：device={device} cable-index={cable} run={run} --fsFile={fsfile} "
-        "spiaddr={spiaddr} (看门狗 {secs}s)",
-    "state: {state} (cable-index={cable})": "状态: {state}（cable-index={cable}）",
-    "Switching via external programmer ({direction}): device={device} cable-index={cable}":
-        "经外置烧录器切换（{direction}）：device={device} cable-index={cable}",
-    "switch command complete": "切换命令完成",
-    "switch command failed": "切换命令失败",
-    "Programmer CLI not found; cannot write-lock": "未找到烧录器 CLI，无法写锁",
-    "programmer.toml declares no [programmer.efuse]; cannot write-lock":
-        "programmer.toml 未声明 [programmer.efuse]，无法写锁",
-    "Key file missing: {key}": "密钥文件缺失: {key}",
-    "Writing and locking AES key (irreversible): device={device} cable-index={cable} keyFile={keyfile}":
-        "写入并锁定 AES 密钥（不可逆）：device={device} cable-index={cable} keyFile={keyfile}",
-    "write-lock complete (key written and locked)": "写锁完成（密钥已写入并锁定）",
-    "write-lock failed": "写锁失败",
 
     # ---- profiles.py (self-check Problem messages) -----------------------
-    "programmer.toml missing: {f}": "programmer.toml 缺失: {f}",
-    "programmer.toml parse failed: {f}: {e}": "programmer.toml 解析失败: {f}: {e}",
-    "programmer.toml missing [programmer] section: {f}": "programmer.toml 缺 [programmer] 段: {f}",
-    "programmer.toml [programmer] missing device: {f}": "programmer.toml [programmer] 缺 device: {f}",
-    "cable_candidates is empty": "cable_candidates 为空",
-    "[programmer.switch] must declare at least dfu2app or app2dfu":
-        "[programmer.switch] 需至少声明 dfu2app 或 app2dfu",
-    "programmer.toml [programmer] invalid: {e}": "programmer.toml [programmer] 无效: {e}",
     "profile parse failed: {e}": "档案解析失败: {e}",
     "schema_version should be {expected}, actual {actual!r}":
         "schema_version 应为 {expected}, 实际 {actual!r}",
@@ -296,17 +221,6 @@ ZH: dict[str, str] = {
         "firmware.app 未配置，DFU 与一键流程禁用",
     "application firmware missing: {path}; DFU and one-click flow disabled":
         "应用固件缺失: {path}，DFU 与一键流程禁用",
-    "programmer CLI not found (programmer.cli not declared and no Gowin AppImage "
-    "in resources/bin); blank-flash/eFuse disabled":
-        "未找到烧录器 CLI（programmer.cli 未声明且 resources/bin 无 Gowin AppImage），烧空板/eFuse 功能禁用",
-    "blank-flash DFU image missing: {path}; blank-flash disabled":
-        "烧空板 DFU 镜像缺失: {path}，烧空板禁用",
-    "eFuse key file missing: {path}; the eFuse write-lock prerequisite of "
-    "blank-flash will fail":
-        "eFuse 密钥文件缺失: {path}，烧空板的 eFuse 写锁前置步骤将失败",
-    "switch {d} references a missing file: {path}; this direction falls back to a "
-    "manual dialog":
-        "切换 {d} 引用的文件缺失: {path}，该方向回退弹窗人工",
 
     # ---- sigrok.py / flasher.py / mode_switch.py -------------------------
     "Capture cancelled": "采样已取消",
@@ -456,22 +370,8 @@ ZH: dict[str, str] = {
         'plan[{i}].configs[{j}].channels={ch} 超过 num_channels',
     'plan[{i}].configs[{j}].samplerate={sr} not in the samplerates list':
         'plan[{i}].configs[{j}].samplerate={sr} 不在 samplerates 列表中',
-    'Cannot tell the programmer apart from the fixture: every 0403:6010 device reports a BL702 serial':
-        '无法区分编程器与夹具：所有 0403:6010 设备的序列号都含 BL702',
-    " The signal-generator fixture is plugged in ({ports}); it shares the FTDI ID 0403:6010 with this product's programmer, so unplug the fixture to flash the board under test.":
-        ' 信号发生器夹具已插入（{ports}）；它与本产品的编程器同为 FTDI 0403:6010，请拔掉夹具后再烧录被测板。',
-    "openFPGALoader will target the FTDI device with serial {s} ({p}); the fixture's BL702 is excluded by its serial":
-        'openFPGALoader 将使用序列号为 {s} 的 FTDI 设备（{p}）；夹具的 BL702 已按序列号排除',
-    'cable-index {cable} read the right device, reading eFuse lock state...':
-        'cable-index {cable} 读到正确的器件，读 eFuse 锁定状态…',
-    '{n} candidate programmer devices found; using the first':
-        '找到 {n} 个候选编程器，使用第一个',
-    'cable-index {cable} answered, but it is a different device: read {got:#010x}, expected {exp:#010x} -- trying the next cable':
-        'cable-index {cable} 有应答但器件不符：读到 {got:#010x}，应为 {exp:#010x}——尝试下一根线缆',
-    'cable-index {cable} answered but reported no IDCODE to compare; using it':
-        'cable-index {cable} 有应答但未报告可比对的 IDCODE；使用它',
 
-    # ---- stations: JTAG flashing / production test (v0.2.0) ----------------
+    # ---- station arming (v0.2.0) -------------------------------------------
     'Recognised automatically from the board':
         '由被测板自动识别',
     'Arm the station: each newly connected board is recognised and run automatically':
@@ -486,32 +386,16 @@ ZH: dict[str, str] = {
         '开始',
     'No analyzer detected':
         '未检测到分析仪',
-    'programmer.toml with flash + idcode':
-        '含 flash 与 idcode 的 programmer.toml',
     'Disarmed':
         '已撤防',
-    'JTAG: no board detected':
-        'JTAG：未检测到被测板',
     'Remove the board under test':
         '请取下被测板',
     'Connect a board first (click Start to recognise it)':
         '请先接入被测板（点"开始"自动识别）',
-    'Station: {s}':
-        '工位: {s}',
     '{n} analyzers online; keep only the board under test connected':
         '在线 {n} 台分析仪；请只保留被测板一台',
-    'Armed: {station}':
-        '已布防：{station}',
-    '{station}: {name}':
-        '{station}：{name}',
-    'JTAG: unknown device (IDCODE {code:#010x}); not a configured product':
-        'JTAG：未知器件（IDCODE {code:#010x}），不是已配置的产品',
-    'JTAG: {name} (IDCODE {code:#010x}, via {via})':
-        'JTAG：{name}（IDCODE {code:#010x}，经 {via}）',
     'USB link':
         'USB 链路',
-    'Unknown station: {s}':
-        '未知工位：{s}',
     'USB link {got} (needs {need}): OK':
         'USB 链路 {got}（要求 {need}）：合格',
     'No {name} running its app firmware was found':
@@ -522,10 +406,6 @@ ZH: dict[str, str] = {
         '{name} 处于 DFU 模式：应用固件尚未烧录',
     'unknown link {name!r} (expected one of {opts})':
         '未知链路 {name!r}（应为 {opts} 之一）',
-    'JTAG flashing':
-        'JTAG 烧录',
-    'Production test':
-        '产测',
     'Fixture · flash signal generator':
         '夹具 · 烧录信号发生器',
     'Check USB link':
@@ -551,14 +431,10 @@ ZH: dict[str, str] = {
     # ---- Material UI (v0.3.0) ---------------------------------------------
     'SLogic Production Test':
         'SLogic 产测',
-    'Choose the station and click Start':
-        '选择工位后点击「开始」',
     'Failed steps: {items}':
         '失败步骤：{items}',
     'Product: {name}':
         '产品：{name}',
-    'JTAG: detected after Start':
-        'JTAG：点击「开始」后自动检测',
     'Report':
         '报告',
     'Environment Setup':
@@ -573,8 +449,6 @@ ZH: dict[str, str] = {
         '浅色',
     'Dark':
         '深色',
-    "eFuse key already written but not locked; not writing it again (irreversible), continuing with the DFU image. If the key is wrong the board will not boot at the test station":
-        'eFuse 已写入密钥但未锁定；不再重复写入（不可逆），继续烧 DFU 镜像。密钥若不对，产测工位会发现板子无法启动',
-    ' (key already written, not locked)':
-        '（密钥已写入、未锁定）',
+    'Armed':
+        '已布防',
 }

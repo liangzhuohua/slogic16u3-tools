@@ -14,7 +14,7 @@ resources/bin/*
 # （来源/许可/构建见 resources/README.md）；由上面的 resources/bin/* 通配忽略。
 
 # 固件与工厂产测专用资源：只在工位本地放置，禁止入库/公开
-# 每产品目录 resources/products/<id>/：product.toml + programmer.toml 公开入库，
+# 每产品目录 resources/products/<id>/：product.toml 公开入库，
 # firmware/ 下的镜像/密钥为工厂本地，禁止入库/公开。
 resources/products/*/firmware/*.bin
 resources/products/*/firmware/*.fs

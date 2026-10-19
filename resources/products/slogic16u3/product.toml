@@ -1,6 +1,6 @@
 # SLogic16U3 产品档案（公开，入库）
-# 新增产品：复制本目录为 resources/products/<product_id>/，改 product.toml +
-# programmer.toml 各字段，把固件/密钥放进 firmware/，无需改代码。
+# 新增产品：复制本目录为 resources/products/<product_id>/，改 product.toml
+# 各字段，把固件放进 firmware/，无需改代码。
 schema_version = 1
 
 [product]
@@ -59,8 +59,7 @@ reset_settle_s = 2.0         # 复位后重枚举等待（每次烧录固定开�
 [mode_switch]
 # DFU<->APP 切换按可用方案自动分派（无需脚本）：
 #   1. usb_reconfig = true：产品自身 USB 控制传输 RECONFIG（16U3 不支持）；
-#   2. programmer.toml [programmer.switch]：外置烧录器保底方案；
-#   3. 都没有 -> GUI 弹窗提示按板载 MODE 按键，随后自动等待目标模式设备。
+#   2. 不支持 -> GUI 弹窗提示按板载 MODE 按键，随后自动等待目标模式设备。
 usb_reconfig = false
 timeout_s = 60
 
@@ -69,4 +68,3 @@ wait_dfu_device_s = 30
 wait_app_device_s = 30
 dfu_flash_s = 600
 capture_s = 120
-blank_flash_step_s = 120
