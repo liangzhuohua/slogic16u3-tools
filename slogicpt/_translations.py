@@ -573,4 +573,8 @@ ZH: dict[str, str] = {
         '浅色',
     'Dark':
         '深色',
+    "eFuse key already written but not locked; not writing it again (irreversible), continuing with the DFU image. If the key is wrong the board will not boot at the test station":
+        'eFuse 已写入密钥但未锁定；不再重复写入（不可逆），继续烧 DFU 镜像。密钥若不对，产测工位会发现板子无法启动',
+    ' (key already written, not locked)':
+        '（密钥已写入、未锁定）',
 }

@@ -458,12 +458,21 @@ class Pipeline:
         if cable is not None:
             self._cable_index = cable   # 后续烧写步骤复用同一 cable
         self._log(f"[criteria] eFuse: pre-state={state}; rule: locked->skip, "
-                  f"unlocked->write+lock, unknown->abort; "
+                  f"unlocked->write+lock, written->skip, unknown->abort; "
                   f"success = readback state == locked (expect Device Locked)")
         if state == "locked":
             self._log(t("eFuse already locked (key written), skipping write-lock"))
             self.report_lines.append(
                 t("eFuse write-lock") + ": SKIP" + t(" (already locked)"))
+            return True
+        if state == "written":
+            # 已有密钥却没锁：再写只会多烧位、必然校验失败。不写，继续烧 DFU——
+            # 密钥若不对，产测工位会发现板子起不来，到时再记录异常。
+            self._log(t("eFuse key already written but not locked; not writing it "
+                        "again (irreversible), continuing with the DFU image. If the "
+                        "key is wrong the board will not boot at the test station"))
+            self.report_lines.append(
+                t("eFuse write-lock") + ": SKIP" + t(" (key already written, not locked)"))
             return True
         if state != "unlocked":
             self._log(t("Cannot confirm eFuse state (external programmer not "

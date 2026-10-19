@@ -32,7 +32,7 @@ from .procutil import popen_kwargs
 from .sigrok import watchdog
 from .winexec import needs_reparent, run_reparented
 
-EFuse = Literal["locked", "unlocked", "unknown"]
+EFuse = Literal["locked", "written", "unlocked", "unknown"]
 
 
 @dataclass
@@ -77,12 +77,21 @@ def _device_online(out: str) -> bool:
 
 def _efuse_state(out: str) -> EFuse:
     """Locked check comes first: the locked --keyread reply carries both
-    'Device Locked!' and an 'Error:' line, so the error markers must not win."""
+    'Device Locked!' and an 'Error:' line, so the error markers must not win.
+
+    "written" = not locked, but the key read back is not all zeros: a key was
+    burned before without the lock taking.  Writing again cannot succeed (eFuse
+    bits only go 0 -> 1) and only burns more bits -- measured on a provisioned
+    32U3: Key=0xF000D000B400F400D800B000F000D400, Value: 0, and the rewrite
+    ended in "Error: Verify failed."."""
     low = out.lower()
     if "device locked" in low:
         return "locked"
     if any(m in low for m in _FAIL_MARKERS):
         return "unknown"
+    key = re.search(r"key\s*=\s*0x([0-9a-f]+)", low)
+    if key and int(key.group(1), 16) != 0:
+        return "written"
     if "finished" in low or "key" in low:
         return "unlocked"
     return "unknown"
@@ -652,6 +661,11 @@ if __name__ == "__main__":
     kr_locked = "Key1 Sel.\nError: Device Locked!\nValue: 1"
     kr_unlocked = "Key1 Sel.\nValue: 0123456789ABCDEF0123456789ABCDEF\nFinished."
     kr_err = "Error: Cable failed to open via the channel"
+    # 32U3 真机：已写过密钥但锁定位为 0
+    kr_written = (" Key1 Sel.\n Key Reading.\n Key=0xF000D000B400F400D800B000F000D400\n"
+                  "Value: 0\n Device Identifier (DNA) is 0x18009C00D0004200.\n")
+    kr_blank = (" Key1 Sel.\n Key Reading.\n Key=0x00000000000000000000000000000000\n"
+                "Value: 0\n Cost 1.24 second(s)\n")
     flash_ok = "Erase Flash...\nProgram Flash...\nVerify Flash...\nFinished."
     flash_bad = "Program Flash...\nVerify Error at 0x1000\nUser Cancel!"
     # 32U3 真机抓包：.bin 误经 --fsFile 载荷为 0，rc=0 且带 "Finished." 但中间报错
@@ -664,6 +678,8 @@ if __name__ == "__main__":
     assert _efuse_state(kr_locked) == "locked"
     assert _efuse_state(kr_unlocked) == "unlocked"
     assert _efuse_state(kr_err) == "unknown"
+    assert _efuse_state(kr_written) == "written"
+    assert _efuse_state(kr_blank) == "unlocked"
     # 自定义烧录命令的模板替换（openFPGALoader 形态）
     _tpl = ["openFPGALoader.exe", "-c", "ft2232", "--external-flash",
             "-o", "{spiaddr}", "{image}"]
