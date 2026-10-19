@@ -70,54 +70,62 @@ def measure_channel(samples: np.ndarray, channel: int,
     if idx.size == 0:
         return Measurement(channel, static=int(samples[0]))
 
-    # segment boundaries, including the implicit one at t = 0
-    bnd = np.concatenate(([0], idx))
-    lvl = np.concatenate(([samples[0]], samples[idx]))       # level from bnd[i]
-    width = np.diff(bnd).astype(np.float64)                  # width of segment i
-    seg_lvl = lvl[:-1].astype(np.int8)
+    if glitch_frac == 0:
+        # Production default.  No segment is shorter than a zero threshold, so
+        # the walk below would keep every transition; take them all at once.
+        level = int(samples[idx[-1]])
+        kept_t = np.concatenate(([0], idx, [samples.size]))
+        kept_lvl = np.concatenate(([samples[0]], samples[idx], [level]))
+        glitches = 0
+    else:
+        # segment boundaries, including the implicit one at t = 0
+        bnd = np.concatenate(([0], idx))
+        lvl = np.concatenate(([samples[0]], samples[idx]))       # level from bnd[i]
+        width = np.diff(bnd).astype(np.float64)                  # width of segment i
+        seg_lvl = lvl[:-1].astype(np.int8)
 
-    highs = width[seg_lvl == 1]
-    lows = width[seg_lvl == 0]
-    hi_thr = float(np.median(highs)) * glitch_frac if highs.size else 0.0
-    lo_thr = float(np.median(lows)) * glitch_frac if lows.size else 0.0
+        highs = width[seg_lvl == 1]
+        lows = width[seg_lvl == 0]
+        hi_thr = float(np.median(highs)) * glitch_frac if highs.size else 0.0
+        lo_thr = float(np.median(lows)) * glitch_frac if lows.size else 0.0
 
-    # Sequential walk: a segment shorter than its polarity's threshold is treated
-    # as ringing and merged into the next one, so it contributes no edge. Doing
-    # this in order (rather than vectorised) is what makes the merge correct.
-    # Collect the KEPT transitions first; the duty calculation needs to know where
-    # the first and last rising edges are, which is only known at the end.
-    kept_t = [0]
-    kept_lvl = [int(samples[0])]
-    glitches = 0
-    level = int(samples[0])
-    start = 0
-    for i in range(idx.size):
-        t = int(idx[i])
-        new = int(samples[t])
-        w = t - start
-        thr = hi_thr if level == 1 else lo_thr
-        # 采集**起点所在的那一段**是被窗口截断的，真实宽度未知，不能拿毛刺阈值
-        # 去判它。否则 M0 会误判：捕获起点必然落在某个通道的电平期间（walking-one
-        # 每步 100us，10ms 窗口里几乎必然如此），于是
-        #   - 起点时正在高电平的那一路：首个高电平被采短 -> 判毛刺丢掉；
-        #   - 起点时是低电平的那一路：首个低电平同样被采短 -> 也丢掉。
-        # 这两路的"首次上升沿"于是整体跳到下一轮，check_order 的轮转序列错位、
-        # 报 FAIL —— 与板子好坏无关，纯粹是采集相位的抽签。
-        # 实测（同一台设备连跑）：修复前 1 通过 / 3 失败，起始通道每次不同
-        # （CH17 / CH20），失败详情形如 "rank 27: got CH13 at 28.00 steps,
-        # expected CH12 at 27"；直接查采集文件可见 CH12 起始电平=1、首个高电平
-        # 只有 976 个采样点（正常 20000）。
-        at_capture_start = (i == 0)
-        if w < thr and not at_capture_start:
-            glitches += 1
+        # Sequential walk: a segment shorter than its polarity's threshold is treated
+        # as ringing and merged into the next one, so it contributes no edge. Doing
+        # this in order (rather than vectorised) is what makes the merge correct.
+        # Collect the KEPT transitions first; the duty calculation needs to know where
+        # the first and last rising edges are, which is only known at the end.
+        kept_t = [0]
+        kept_lvl = [int(samples[0])]
+        glitches = 0
+        level = int(samples[0])
+        start = 0
+        for i in range(idx.size):
+            t = int(idx[i])
+            new = int(samples[t])
+            w = t - start
+            thr = hi_thr if level == 1 else lo_thr
+            # 采集**起点所在的那一段**是被窗口截断的，真实宽度未知，不能拿毛刺阈值
+            # 去判它。否则 M0 会误判：捕获起点必然落在某个通道的电平期间（walking-one
+            # 每步 100us，10ms 窗口里几乎必然如此），于是
+            #   - 起点时正在高电平的那一路：首个高电平被采短 -> 判毛刺丢掉；
+            #   - 起点时是低电平的那一路：首个低电平同样被采短 -> 也丢掉。
+            # 这两路的"首次上升沿"于是整体跳到下一轮，check_order 的轮转序列错位、
+            # 报 FAIL —— 与板子好坏无关，纯粹是采集相位的抽签。
+            # 实测（同一台设备连跑）：修复前 1 通过 / 3 失败，起始通道每次不同
+            # （CH17 / CH20），失败详情形如 "rank 27: got CH13 at 28.00 steps,
+            # expected CH12 at 27"；直接查采集文件可见 CH12 起始电平=1、首个高电平
+            # 只有 976 个采样点（正常 20000）。
+            at_capture_start = (i == 0)
+            if w < thr and not at_capture_start:
+                glitches += 1
+                start = t
+                continue
+            kept_t.append(t)
+            kept_lvl.append(new)
+            level = new
             start = t
-            continue
-        kept_t.append(t)
-        kept_lvl.append(new)
-        level = new
-        start = t
-    kept_t.append(int(samples.size))
-    kept_lvl.append(level)
+        kept_t.append(int(samples.size))
+        kept_lvl.append(level)
 
     # A rising edge is where the level goes 0 -> 1, so `rise_at` indexes the LOW
     # segment that PRECEDES each rise. The edge itself is at kept_t[i + 1]; using
@@ -131,8 +139,8 @@ def measure_channel(samples: np.ndarray, channel: int,
     if rise_at.size >= 2:
         i_first = int(rise_at[0]) + 1
         i_last = int(rise_at[-1]) + 1
-        t_first = kept_t[i_first]
-        t_last = kept_t[i_last]
+        t_first = int(kept_t[i_first])
+        t_last = int(kept_t[i_last])
         span_t = t_last - t_first
         m.first_rise = t_first
 
@@ -509,12 +517,9 @@ def _high_widths(s: np.ndarray) -> tuple[list[int], list[int]]:
     starts = np.flatnonzero(d == 1)
     ends = np.flatnonzero(d == -1)
     highs = (ends - starts).astype(int).tolist()
-    gaps = []
-    for i in range(min(len(ends), len(starts)) - 1):
-        g = int(starts[i + 1] - ends[i])
-        if g > 0:
-            gaps.append(g)
-    return highs, gaps
+    k = min(len(ends), len(starts))
+    g = starts[1:k] - ends[:k - 1] if k > 1 else starts[:0]
+    return highs, g[g > 0].astype(int).tolist()
 
 
 def _narrow_pulse_verdicts(channels: np.ndarray, sample_rate_hz: float) -> list[Verdict]:

@@ -43,9 +43,14 @@ def extract_channels(data: bytes, num_channels: int,
     n = len(data) // unitsize
     if n == 0:
         raise ValueError("数据为空或不足一个样本")
-    arr = np.frombuffer(data[:n * unitsize], dtype=np.uint8).reshape(n, unitsize)
-    bits = np.unpackbits(arr, axis=1, bitorder="little")   # little-endian bit/byte order
-    return np.ascontiguousarray(bits[:, :num_channels].T)
+    arr = np.frombuffer(data, dtype=np.uint8, count=n * unitsize).reshape(n, unitsize)
+    # One channel at a time (little-endian bit/byte order): unpacking every
+    # bit and transposing would allocate two n*unitsize*8 temporaries -- over
+    # 500 MB for a long 32-channel capture.
+    out = np.empty((num_channels, n), dtype=np.uint8)
+    for ch in range(num_channels):
+        np.bitwise_and(np.right_shift(arr[:, ch >> 3], ch & 7), 1, out=out[ch])
+    return out
 
 
 def load_capture_file(path: Path, num_channels: int, unitsize: int) -> np.ndarray:
