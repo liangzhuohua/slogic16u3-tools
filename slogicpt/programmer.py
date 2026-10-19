@@ -26,17 +26,11 @@ from typing import Callable, Literal
 
 from .i18n import t
 from .profiles import Programmer
-from .sigrok import _popen_kwargs, watchdog
+from .fpga import fixture_ports, is_fixture_serial
+from . import procutil
+from .procutil import popen_kwargs
+from .sigrok import watchdog
 from .winexec import needs_reparent, run_reparented
-
-try:                                    # 与 fpga.py 用同一个来源判断台架设备
-    import serial.tools.list_ports as list_ports
-except ImportError:                     # pragma: no cover
-    list_ports = None
-
-# 夹具 Tang Nano 的 BL702 和本产品的 Gowin 烧录器共用这个 ID。
-FTDI_VID = 0x0403
-FTDI_PID = 0x6010
 
 EFuse = Literal["locked", "unlocked", "unknown"]
 
@@ -183,7 +177,7 @@ def _run_argv(argv: list[str], timeout_s: float,
     try:
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, cwd=cwd, **_popen_kwargs())
+            text=True, bufsize=1, cwd=cwd, **popen_kwargs())
     except OSError as e:
         log_cb("[programmer] " + t("Launch failed: {e}").format(e=e))
         return -1, ""
@@ -246,10 +240,9 @@ def openfpga_exe() -> Path | None:
     PATH（Linux 台架用发行版包）。资源目录里只有 Windows 的 .exe 时，Linux 绝不能
     选它——执行失败会被吞掉，最后只报一句误导性的"找不到设备"。"""
     import shutil
-    import sys
     from .profiles import RESOURCES_DIR
     bundled = RESOURCES_DIR / "bin" / "openFPGALoader"
-    if sys.platform == "win32":
+    if procutil.IS_WINDOWS:
         cand = bundled / "openFPGALoader.exe"
         return cand if cand.is_file() else None
     cand = bundled / "openFPGALoader"
@@ -296,12 +289,12 @@ def detect_product(profiles, cancel: threading.Event | None = None) -> Detected 
     exe = openfpga_exe()
     if exe is not None:
         rows = _programmer_ftdi_rows([str(exe)]) or []
-        others = [r for r in rows if "BL702" not in r[1].upper()]
+        others = [r for r in rows if not is_fixture_serial(r[1])]
         if others:
             try:
                 proc = subprocess.run(
                     [str(exe), "-c", "ft2232", "--ftdi-serial", others[0][1], "--detect"],
-                    capture_output=True, text=True, timeout=20, **_popen_kwargs())
+                    capture_output=True, text=True, timeout=20, **popen_kwargs())
                 codes = [c for c in _parse_ofl_idcodes(
                     (proc.stdout or "") + (proc.stderr or ""))
                     if c not in (0, 0xFFFFFFFF)]
@@ -315,10 +308,7 @@ def detect_product(profiles, cancel: threading.Event | None = None) -> Detected 
     # fixture's BL702 (same 0403:6010) present it may open the fixture: it would
     # read the Tang Nano's IDCODE and its JTAG traffic disturbs the fixture's
     # SRAM configuration.  Never fall back while a BL702 is on the host.
-    if list_ports is not None and any(
-            "BL702" in (port.serial_number or "").upper()
-            for port in list_ports.comports()
-            if port.vid == FTDI_VID and port.pid == FTDI_PID):
+    if fixture_ports():
         return None
     for p in cands:
         prog = p.programmer
@@ -389,18 +379,12 @@ def probe(prog: Programmer, log_cb: Callable[[str], None] = print,
     # 就报"没读到器件" —— 而操作员看到的只是"烧录器没连或没上电"，很容易去
     # 查根本没问题的线缆。实测：拔掉夹具后同一条命令立刻读到本产品的 IDCODE。
     hint = ""
-    if list_ports is not None:
-        try:
-            fixture = [p.device for p in list_ports.comports()
-                       if p.vid == FTDI_VID and p.pid == FTDI_PID
-                       and "BL702" in (p.serial_number or "").upper()]
-        except Exception:                       # noqa: BLE001
-            fixture = []
-        if fixture:
-            hint = t(" The signal-generator fixture is plugged in ({ports}); it "
-                     "shares the FTDI ID 0403:6010 with this product's programmer, "
-                     "so unplug the fixture to flash the board under test."
-                     ).format(ports=", ".join(fixture))
+    fixture = fixture_ports()
+    if fixture:
+        hint = t(" The signal-generator fixture is plugged in ({ports}); it "
+                 "shares the FTDI ID 0403:6010 with this product's programmer, "
+                 "so unplug the fixture to flash the board under test."
+                 ).format(ports=", ".join(fixture))
     log_cb("[probe] " + t("Result: no device read on any cable -- external programmer "
                           "not connected or unpowered") + hint)
     return ProbeResult(False, None, None, "unknown",
@@ -415,7 +399,7 @@ def _programmer_ftdi_rows(cli: list[str] | None) -> list[tuple[str, str, str]] |
         return None
     try:
         proc = subprocess.run([*cli, "--scan-usb"], capture_output=True,
-                              text=True, timeout=20, **_popen_kwargs())
+                              text=True, timeout=20, **popen_kwargs())
     except (OSError, subprocess.SubprocessError):
         return None
     # 列格式：Bus device vid:pid probe_type manufacturer serial product
@@ -449,7 +433,7 @@ def _ftdi_serial_for_programmer(log_cb: Callable[[str], None],
     rows = _programmer_ftdi_rows(cli)
     if not rows:
         return None
-    others = [r for r in rows if "BL702" not in r[1].upper()]
+    others = [r for r in rows if not is_fixture_serial(r[1])]
     if not others:
         log_cb("[flash] " + t("Cannot tell the programmer apart from the fixture: "
                               "every 0403:6010 device reports a BL702 serial"))

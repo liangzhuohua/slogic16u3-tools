@@ -46,6 +46,14 @@ SCHEMA_VERSION = 1
 LINK_SPEEDS = {"USB2": 3, "5G": 4, "10G": 5, "20G": 6}
 
 
+def link_name(speed: int | None) -> str:
+    """libusb_speed code -> short link name (the inverse of LINK_SPEEDS; full-
+    and low-speed both read as USB1)."""
+    if speed in (1, 2):
+        return "USB1"
+    return next((k for k, v in LINK_SPEEDS.items() if v == speed), "?")
+
+
 def parse_link(name: str) -> int:
     """'10G' / '5G' / 'USB2' -> libusb speed code (ValueError if unknown)."""
     key = str(name).strip().upper()
@@ -769,7 +777,7 @@ def _parse_profile(product_dir: Path,
                             "error", prod_id,
                             t("plan M{mode} has no config for the {link} pass").format(
                                 mode=e.mode,
-                                link=next(k for k, v in LINK_SPEEDS.items() if v == link))))
+                                link=link_name(link))))
         return profile, problems
     except (KeyError, ValueError, TypeError) as e:
         kind = t("missing required field") if isinstance(e, KeyError) else t("invalid field")

@@ -100,6 +100,33 @@ def find_ports() -> list[PortInfo]:
     return out
 
 
+def is_fixture_serial(serial: str | None) -> bool:
+    """True for the fixture's BL702 (its serial carries "BL702"); False for the
+    Gowin programmer's FT2232H, which shares VID:PID 0403:6010."""
+    return FPGA_SERIAL_HINT in (serial or "").upper()
+
+
+def fixture_ports() -> list[str]:
+    """Serial ports of the fixture (empty when absent or pyserial is missing).
+    The single source for "is the fixture plugged in" -- pipeline, programmer
+    and the GUI all ask here."""
+    try:
+        return [p.device for p in find_ports() if is_fixture_serial(p.serial_number)]
+    except Exception:                       # noqa: BLE001  (enumeration can fail mid-replug)
+        return []
+
+
+def fixture_present() -> bool:
+    return bool(fixture_ports())
+
+
+def _usb_interface(location: str | None) -> int | None:
+    """USB interface number from pyserial's location ("1-7.4.4:1.1" ->
+    config 1, interface 1).  None where the platform does not report it."""
+    m = re.search(r":\d+\.(\d+)$", location or "")
+    return int(m.group(1)) if m else None
+
+
 def find_port(explicit: str | None = None) -> str:
     """定位信号发生器的串口。
 
@@ -128,16 +155,14 @@ def find_port(explicit: str | None = None) -> str:
     # only one of the ports is the fixture.
     #
     # The fixture's BL702 puts "BL702" in its serial number; an FT2232 does not.
-    bl702 = [c for c in cands
-             if FPGA_SERIAL_HINT.lower() in (c.serial_number or "").lower()]
+    bl702 = [c for c in cands if is_fixture_serial(c.serial_number)]
     if len(bl702) == 1:
         return bl702[0].device
     # One BL702 seen twice: on Linux its FT2232 emulation exposes BOTH interfaces
     # as ttyUSB -- A (interface 0) is JTAG, B (interface 1) is the UART that
     # speaks the mode protocol. Windows usually shows only one COM port.
     if len({c.serial_number for c in bl702}) == 1:
-        uart = [c for c in bl702
-                if re.search(r"\.1$", c.location or "")]
+        uart = [c for c in bl702 if _usb_interface(c.location) == 1]
         if len(uart) == 1:
             return uart[0].device
 

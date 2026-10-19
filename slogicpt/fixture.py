@@ -30,15 +30,14 @@ The profile picks the index via `signal_source.firmware_run`.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+from . import procutil
+from .fpga import is_fixture_serial
 from .i18n import t
-from .profiles import RESOURCES_DIR
-from .sigrok import _popen_kwargs
 
 # The Gowin CLI must be invoked by ABSOLUTE path: it locates its own module
 # directory relative to the executable, and a bare name gives
@@ -97,23 +96,15 @@ def _flash_openfpga(bitstream: Path, run: int, log, timeout_s: float,
     if run in _EMBFLASH_RUNS:
         argv.append("-f")
     argv.append(str(bitstream))
-    import tempfile
-    with tempfile.TemporaryDirectory(prefix="slogic_fixture_") as tmp:
-        logfile = Path(tmp) / "openfpga.log"
-        try:
-            with open(logfile, "wb") as lf:
-                proc = subprocess.Popen(argv, stdout=lf, stderr=subprocess.STDOUT,
-                                        **_popen_kwargs())
-                try:
-                    rc = proc.wait(timeout=timeout_s)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    log(t("openFPGALoader timed out after {s}s").format(s=f"{timeout_s:.0f}"))
-                    return False
-            out = logfile.read_bytes().decode("utf-8", "replace")
-        except OSError as e:
-            log(t("Launch failed: {e}").format(e=e))
-            return False
+    rc, out, failure = procutil.run_to_file(argv, timeout_s, cancel)
+    if failure == "timeout":
+        log(t("openFPGALoader timed out after {s}s").format(s=f"{timeout_s:.0f}"))
+        return False
+    if failure == "cancel":
+        return False
+    if failure:
+        log(t("Launch failed: {e}").format(e=failure.split(": ", 1)[-1]))
+        return False
     for line in out.splitlines():
         log("   " + line.rstrip())
     # 只认 "CRC check: Success"，不看退出码，也不认 "Done"：openFPGALoader 每个
@@ -126,19 +117,17 @@ def _flash_openfpga(bitstream: Path, run: int, log, timeout_s: float,
 
 
 def _fixture_ftdi_serial(log) -> str | None:
-    """夹具 BL702 的 FTDI 序列号，问 openFPGALoader 自己要。"""
+    """夹具 BL702 的 FTDI 序列号，问 openFPGALoader 自己要（解析在 programmer）。"""
+    from .programmer import _programmer_ftdi_rows
     exe = _openfpga_exe()
     if exe is None:
         return None
-    try:
-        proc = subprocess.run([str(exe), "--scan-usb"], capture_output=True,
-                              text=True, timeout=20, **_popen_kwargs())
-    except (OSError, subprocess.SubprocessError):
+    rows = _programmer_ftdi_rows([str(exe)])
+    if rows is None:
         return None
-    for line in (proc.stdout or "").splitlines():
-        m = re.search(r"0x0403:0x6010\s+\S+\s+(\S+)\s+(\S+)\s+(.+?)\s*$", line)
-        if m and "BL702" in m.group(2).upper():
-            return m.group(2)
+    for _, serial, _ in rows:
+        if is_fixture_serial(serial):
+            return serial
     log(t("Cannot find the fixture: no 0403:6010 device reports a BL702 serial"))
     return None
 
@@ -186,6 +175,8 @@ def flash(bitstream: Path, run: int, log_cb=None, *,
 
     if _flash_openfpga(bitstream, run, log, timeout_s, cancel):
         return True
+    if cancel is not None and cancel.is_set():
+        return False
     log(t("openFPGALoader could not load the fixture; falling back to the "
           "Gowin programmer"))
 
@@ -217,23 +208,18 @@ def flash(bitstream: Path, run: int, log_cb=None, *,
             _kill_strays()
             return False
     else:
-        import tempfile
-        with tempfile.TemporaryDirectory(prefix="slogic_fixture_") as tmp:
-            logfile = Path(tmp) / "programmer.log"
-            with open(logfile, "wb") as lf:
-                try:
-                    proc = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                                          stdout=lf, stderr=subprocess.STDOUT,
-                                          timeout=timeout_s)
-                    rc = proc.returncode
-                except subprocess.TimeoutExpired:
-                    log(t("Fixture programming timed out after {s}s").format(s=int(timeout_s)))
-                    _kill_strays()
-                    return False
-                except FileNotFoundError:
-                    log(t("Cannot execute {p}").format(p=exe))
-                    return False
-            text = logfile.read_text(encoding="utf-8", errors="replace")
+        # Gowin's CLI assembles its Qt/DLL environment from its own bin dir.
+        rc, text, failure = procutil.run_to_file(cmd, timeout_s, cancel,
+                                                 cwd=str(exe.parent))
+        if failure == "timeout":
+            log(t("Fixture programming timed out after {s}s").format(s=int(timeout_s)))
+            _kill_strays()
+            return False
+        if failure == "cancel":
+            return False
+        if failure:
+            log(t("Cannot execute {p}").format(p=exe))
+            return False
 
     # 重定父那条路径已经逐行写过日志了，不要再重复一遍。
     if not reparented:
@@ -248,8 +234,6 @@ def flash(bitstream: Path, run: int, log_cb=None, *,
         log(t("Fixture programming FAILED (exit {rc})").format(rc=rc))
         return False
 
-    if cancel is not None:
-        cancel.wait(0.0)          # no-op; keeps the signature honest for callers
     time.sleep(0.5)               # let the FPGA finish configuring before talking
     return True
 
@@ -261,12 +245,16 @@ def _kill_strays() -> None:
     characters: `taskkill /IM programmer_cli.exe` works, but the same trick for
     sigrok-cli silently matched nothing and left a hung process holding the
     analyser, which then failed every later capture with LIBUSB_ERROR_ACCESS.
+    Windows only: elsewhere run_to_file's kill_tree already took the whole
+    process group, and there is no powershell to call.
     """
+    if not procutil.IS_WINDOWS:
+        return
     subprocess.run(["powershell", "-NoProfile", "-Command",
                     "Get-Process | Where-Object { $_.ProcessName -like "
                     "'*programmer*' } | Stop-Process -Force "
                     "-ErrorAction SilentlyContinue"],
-                   capture_output=True, timeout=20)
+                   capture_output=True, timeout=20, **procutil.hidden_kwargs())
 
 
 def _selftest() -> int:
@@ -282,8 +270,8 @@ def _selftest() -> int:
         print("RESULT: no fixture loader found")
         return 1
     if exe is not None:
-        r = subprocess.run([str(exe), "--scan-cables", "F"],
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run([str(exe), "--scan-cables", "F"], cwd=str(exe.parent),
+                           capture_output=True, timeout=60, **procutil.popen_kwargs())
         print((r.stdout or "").strip())
     print("RESULT: OK")
     return 0

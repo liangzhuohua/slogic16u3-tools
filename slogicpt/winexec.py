@@ -46,38 +46,15 @@ import time
 from pathlib import Path
 from typing import Callable
 
-_CNW = 0x08000000            # CREATE_NO_WINDOW
+from .procutil import hidden_kwargs, kill_pid_tree
+
 _STILL_ACTIVE = 259
-
-
-def _hidden_startupinfo():
-    """STARTUPINFO：要求子进程的窗口隐藏。
-
-    只给 CREATE_NO_WINDOW **不足以**隐藏 powershell —— 打包成 --windowed 后实测
-    仍会闪出一个 powershell 窗口（每跑一次 WMI 调用闪一下）。再叠加
-    STARTF_USESHOWWINDOW + SW_HIDE 才真正不显示。非 Windows 返回 None。
-    """
-    if sys.platform != "win32":
-        return None
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = subprocess.SW_HIDE
-    return si
 
 
 def needs_reparent() -> bool:
     """True only when we are the packaged (frozen) exe on Windows -- the one
     case where a native child inherits the poisoned ancestry."""
     return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
-
-
-def _taskkill(pid: int) -> None:
-    try:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, creationflags=_CNW,
-                       startupinfo=_hidden_startupinfo())
-    except OSError:
-        pass
 
 
 def _alive(pid: int) -> bool:
@@ -116,8 +93,7 @@ def _wmi_create(cmdline: str, work: Path) -> tuple[int | None, str]:
             ["powershell", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-File", str(ps1)],
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=30, creationflags=_CNW,
-            startupinfo=_hidden_startupinfo())
+            timeout=30, **hidden_kwargs())
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, f"powershell/WMI invocation failed: {e}"
     text = ((r.stdout or "") + (r.stderr or "")).strip()
@@ -197,7 +173,7 @@ def run_reparented(argv: list[str], cwd: str | None, timeout_s: float,
                 elif time.time() > deadline:
                     killed = "timeout"
                 if killed:
-                    _taskkill(pid)
+                    kill_pid_tree(pid)
                     break
                 if not _alive(pid):
                     grace_left -= 1

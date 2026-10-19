@@ -14,7 +14,9 @@ import usb.backend.libusb1
 import usb.core
 import usb.util
 
-from .profiles import PLATFORM_KEY, RESOURCES_DIR, ProductProfile, parse_link  # noqa: F401
+from .profiles import (  # noqa: F401  (link_name / parse_link re-exported)
+    PLATFORM_KEY, RESOURCES_DIR, ProductProfile,
+    link_name, parse_link)
 
 
 class Mode(Enum):
@@ -48,15 +50,6 @@ def backend_ok() -> bool:
     都 except 静默 -> 表现为"看不到任何设备"；GUI 用本函数把这一致命情形显式告警。
     典型缺失：Windows 未内置/未装 libusb-1.0.dll。"""
     return libusb_backend() is not None
-
-
-# libusb_speed (LIBUSB_SPEED_*) -> short link name.  The production test
-# station gates on these: 32U3 needs a 10G link, 16U3 a 5G one.
-LINK_NAMES = {1: "USB1", 2: "USB1", 3: "USB2", 4: "5G", 5: "10G", 6: "20G"}
-
-
-def link_name(speed: int | None) -> str:
-    return LINK_NAMES.get(speed or 0, "?")
 
 
 @dataclass(frozen=True)

@@ -11,13 +11,10 @@ replug") and KEEP polling until the device shows up or the run is cancelled.
 """
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
@@ -27,6 +24,7 @@ from . import mode_switch as mode_switch_mod
 from . import programmer as programmer_mod
 from . import waveform
 from .i18n import t
+from .procutil import kill_image
 from .profiles import OUTPUT_DIR, ProductProfile, format_rate
 from .sigrok import CaptureError, SigrokCli
 
@@ -388,25 +386,11 @@ class Pipeline:
 
     # ---- fixture USB presence -------------------------------------------
 
-    def _fixture_ports(self) -> list[str]:
-        """夹具 Tang Nano 的串口（按 BL702 序列号认出）。
-
-        夹具的 BL702 和本产品的 Gowin 烧录器共用 FTDI 0403:6010，只有序列号能
-        区分 —— 夹具的带 BL702，烧录器的不带。
-        """
-        try:
-            import serial.tools.list_ports as lp
-        except ImportError:
-            return []
-        out = []
-        try:
-            for p in lp.comports():
-                if (p.vid == 0x0403 and p.pid == 0x6010
-                        and "BL702" in (p.serial_number or "").upper()):
-                    out.append(p.device)
-        except Exception:                       # noqa: BLE001
-            return []
-        return out
+    @staticmethod
+    def _fixture_ports() -> list[str]:
+        """夹具 Tang Nano 的串口（按 BL702 序列号认出，见 fpga.fixture_ports）。"""
+        from .fpga import fixture_ports
+        return fixture_ports()
 
     def _ensure_fixture(self, plugged: bool) -> bool:
         """确保夹具处于插入 / 拔出的状态，需要时提示操作员并等待。
@@ -1157,17 +1141,7 @@ class Pipeline:
         fails with LIBUSB_ERROR_ACCESS -- a cascade that killed two full runs of
         this project's own matrix before the pattern was found.
         """
-        if sys.platform != "win32":   # NB: os.name is "nt" there, never "win32"
-            return
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "sigrok-cli-windows-x86_64.exe"],
-                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "sigrok-cli.exe"],
-                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        except OSError:
-            pass
+        kill_image("sigrok-cli-windows-x86_64.exe", "sigrok-cli.exe")
 
     def _capture_and_check(self, entry, cfg, vth, n_samples, eff_window_s,
                            checks, patterns, waveform):

@@ -23,12 +23,12 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
 
 from .i18n import t
+from .procutil import hidden_kwargs
 from .profiles import PLATFORM_KEY, RESOURCES_DIR
 
 # --- identities -------------------------------------------------------------
@@ -266,23 +266,6 @@ Write-Output '  device tree rescanned'
 # --------------------------------------------------------------------------- #
 #  Windows: read the driver service bound to the FTDI A-channel (interface 0)  #
 # --------------------------------------------------------------------------- #
-def _hidden_kwargs() -> dict:
-    """让 powershell 子进程**完全不显示窗口**。
-
-    只给 CREATE_NO_WINDOW 在部分场景下不够：实测从无控制台的 `--windowed` 父进程
-    启动、且子进程活得比较久（例如 Get-PnpDevice 要 2~3 秒）时，powershell 的控制台
-    窗口仍会露出来闪一下。再叠加 STARTF_USESHOWWINDOW + SW_HIDE 才稳。
-    """
-    kw: dict = {}
-    if sys.platform == "win32":
-        kw["creationflags"] = 0x08000000                 # CREATE_NO_WINDOW
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = subprocess.SW_HIDE
-        kw["startupinfo"] = si
-    return kw
-
-
 def _winusb_service() -> str:
     """Service name bound to MI_00, e.g. 'WinUSB' or 'FTDIBUS'; '' if the
     device is absent or the query fails.  Needs no elevation (read-only)."""
@@ -295,7 +278,7 @@ def _winusb_service() -> str:
         p = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-Command", ps], capture_output=True, text=True, timeout=20,
-            **_hidden_kwargs())
+            **hidden_kwargs())
     except (OSError, subprocess.SubprocessError):
         return ""
     return (p.stdout or "").strip()
@@ -345,7 +328,7 @@ def _run_elevated_bat(cmdline: str, log_cb) -> tuple[int, str]:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-Command", ps], capture_output=True, text=True,
-            **_hidden_kwargs())
+            **hidden_kwargs())
     except OSError as e:
         log_cb(f"powershell failed: {e}")
         return 1, ""
