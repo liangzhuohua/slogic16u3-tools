@@ -21,7 +21,7 @@ import time
 
 from PyQt5.QtCore import QObject, QSettings, QTimer, pyqtSignal
 
-from .. import device_watch, env_setup
+from .. import device_watch, env_setup, fpga
 from .. import pipeline as pipeline_mod
 from .. import programmer
 from ..device_watch import Mode
@@ -55,6 +55,7 @@ class StationController(QObject):
         self.pipeline: pipeline_mod.Pipeline | None = None
         self.detected: list[device_watch.DeviceStatus] = []
         self.backend_ok = True
+        self.fixture_present = False
         self.last_detect = None                  # programmer.Detected | None
         self.profile: ProductProfile | None = None   # last recognised board
         self.board_cable: int | None = None      # its JTAG cable index
@@ -176,6 +177,7 @@ class StationController(QObject):
         """Poll the USB analyzers.  At the test station this also drives the
         armed state machine (a new board starts a run, its removal re-arms)."""
         self.backend_ok = device_watch.backend_ok()
+        self.fixture_present = fpga.fixture_present()
         self.detected = device_watch.scan_devices(self.profiles) if self.backend_ok else []
         self.devices_changed.emit()
         if self.station == "test" and self.backend_ok:

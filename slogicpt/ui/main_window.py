@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         # operator-visible state, independent of the widgets showing it
         self._steps: dict[str, _Step] = {}
         self._shown_id: str | None = None
+        self._fixture_need: dict[str, bool | None] = {}
         self._result: tuple[str, dict] = ("idle", {})
         self._caption = ""                  # "", "remove" or "next"
         self._prompt = ""
@@ -338,6 +339,7 @@ class MainWindow(QMainWindow):
         # keep the step preview in step with what is plugged in (idle only)
         if ctl.profile is None and not ctl.busy:
             self._layout_steps()
+        self._render_fixture_reqs()
         self._update_enablement()
 
     def _on_state(self):
@@ -396,6 +398,7 @@ class MainWindow(QMainWindow):
         self._shown_id = sid
         if shown is None:
             self._steps.clear()
+            self._fixture_need = {}
             self.stepper.show_hint(
                 t("Connect the board under test") if ctl.station == "test" else
                 t("Click Start, then connect the board under test; it is "
@@ -405,28 +408,44 @@ class MainWindow(QMainWindow):
         plan = sequence_plan(shown, ctl.station)
         self._steps = {}
         has_fixture = shown.signal_source.is_fpga
+        self._fixture_need = {}
         rows = []
         for step_id, name in plan:
             prev = old.get(step_id)
             self._steps[step_id] = _Step(name, *(
                 (prev.status, prev.t_start, prev.duration) if prev else ()))
-            rows.append((step_id, name, self._fixture_req(step_id, has_fixture),
-                         step_id.startswith("capture")))
+            self._fixture_need[step_id] = self._fixture_need_of(step_id, has_fixture)
+            rows.append((step_id, name, "", step_id.startswith("capture")))
         self.stepper.set_steps(rows)
+        self._render_fixture_reqs()
         for step_id, s in self._steps.items():
             self.stepper.set_status(step_id, s.status, s.duration)
         self._update_enablement()
 
     @staticmethod
-    def _fixture_req(sid: str, has_fixture: bool) -> str:
-        """What the step needs of the fixture (Tang Nano 9K), shown under it."""
+    def _fixture_need_of(sid: str, has_fixture: bool) -> bool | None:
+        """Whether the step needs the fixture (Tang Nano 9K) plugged in (True),
+        unplugged (False) or does not care (None)."""
         if not has_fixture:
-            return ""
+            return None
         if sid.startswith("signal"):
-            return t("Requires Tang Nano 9K plugged in")
+            return True
         if sid.startswith(("blank", "wait", "flash", "switch")):
-            return t("Requires Tang Nano 9K unplugged")
-        return ""
+            return False
+        return None
+
+    def _render_fixture_reqs(self):
+        """Show a step's fixture requirement only while the bench contradicts
+        it -- a permanent "unplug the 9K" under every JTAG step read like the
+        cause of whatever failed there."""
+        present = self.ctl.fixture_present
+        for sid, need in self._fixture_need.items():
+            text = ""
+            if need is True and not present:
+                text = t("Requires Tang Nano 9K plugged in")
+            elif need is False and present:
+                text = t("Requires Tang Nano 9K unplugged")
+            self.stepper.set_req(sid, text)
 
     def _on_step(self, sid: str, status: StepStatus):
         s = self._steps.get(sid)

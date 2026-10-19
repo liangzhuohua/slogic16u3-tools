@@ -303,6 +303,12 @@ class Stepper(QWidget):
         elif not running:
             self._spin.stop()
 
+    def set_req(self, sid: str, text: str):
+        node = self.nodes.get(sid)
+        if node is not None:
+            node.req.setText(text)
+            node.req.setVisible(bool(text))
+
     def set_interactive(self, on: bool, tip_for):
         for node in self.nodes.values():
             node.set_interactive(on, tip_for(node))
