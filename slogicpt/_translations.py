@@ -24,7 +24,6 @@ ZH: dict[str, str] = {
     "see resources/README.md to add them.":
         "resources/products/ 下没有可用的产品档案，请参照 resources/README.md 放置。",
     # header
-    "Product:": "产品:",
     "Stop": "停止",
     # sequence panel
     # detail panes (report on top, live log on bottom) + ⚙ capture-params popup
@@ -90,9 +89,7 @@ ZH: dict[str, str] = {
     "Cannot switch language while a test is running.": "测试运行中无法切换语言。",
     # slots
     "Current step: {label}": "当前步骤: {label}",
-    "Running — {label}": "运行中 — {label}",
     "Manual mode switch required": "需要手动切换模式",
-    "; failed steps: {items}": "；失败步骤: {items}",
     # report
     "SLogic Production Test Report": "SLogic 产测报告",
     "Time: {ts}": "时间: {ts}",
@@ -479,18 +476,12 @@ ZH: dict[str, str] = {
         '由被测板自动识别',
     'Arm the station: each newly connected board is recognised and run automatically':
         '布防：每接入一块被测板即自动识别并执行',
-    'Station steps (automatic when armed; ▶ runs one step)':
-        '工位步骤（布防后自动执行；▶ 单步执行）',
-    'Standby — choose the station and click Start':
-        '待机 — 选择工位后点"开始"',
     'Waiting for the board under test…':
         '等待被测板接入…',
     'Board removed; waiting for the next board…':
         '被测板已取下，等待下一块…',
     'Waiting for the next board…':
         '等待下一块被测板…',
-    'Station:':
-        '工位:',
     'Start':
         '开始',
     'No analyzer detected':
@@ -557,4 +548,29 @@ ZH: dict[str, str] = {
         '请连接被测板',
     'Click Start, then connect the board under test; it is recognised automatically':
         '点击「开始」后接入被测板，自动识别产品',
+    # ---- Material UI (v0.3.0) ---------------------------------------------
+    'SLogic Production Test':
+        'SLogic 产测',
+    'Choose the station and click Start':
+        '选择工位后点击「开始」',
+    'Failed steps: {items}':
+        '失败步骤：{items}',
+    'Product: {name}':
+        '产品：{name}',
+    'JTAG: detected after Start':
+        'JTAG：点击「开始」后自动检测',
+    'Report':
+        '报告',
+    'Environment Setup':
+        '环境准备',
+    'Language':
+        '语言',
+    'Theme':
+        '主题',
+    'Follow system':
+        '跟随系统',
+    'Light':
+        '浅色',
+    'Dark':
+        '深色',
 }
