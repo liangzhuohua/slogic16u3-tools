@@ -18,7 +18,6 @@ resources/
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
-    ├── sigrok-cli-macos-arm64             #   macOS
     ├── Gowin-Programmer-x86_64.AppImage   # Gowin 烧录器（Linux，版本无关名；也兼容带版本原名）
     ├── Programmer/                        # Gowin 烧录器（Windows：整个 Programmer 文件夹拷进来）
     ├── openFPGALoader/openFPGALoader.exe  # Windows：快速烧写 + 夹具载入（Linux 用发行版的 openFPGALoader）
@@ -178,8 +177,8 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 
 ## 跨平台（Linux / Windows）
 
-- 烧录器 cli 集中在共享 `resources/programmer.toml`，支持 `cli` / `cli_windows` /
-  `cli_darwin`（各产品档案也可各自覆盖）。默认路径版本无关，便于升级替换；
+- 烧录器 cli 集中在共享 `resources/programmer.toml`，支持 `cli` / `cli_windows`
+  （各产品档案也可各自覆盖）。默认路径版本无关，便于升级替换；
 - **Windows 烧录器**：把整个 Gowin `Programmer` 文件夹拷进 `bin/Programmer/`（相当于
   Linux 的软链，只是 Windows 用拷贝），默认即用 `bin/Programmer/bin/programmer_cli.exe`，
   通常无需改配置；放在别处则在共享 `programmer.toml` 改 `cli_windows`。

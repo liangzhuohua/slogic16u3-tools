@@ -17,7 +17,7 @@ operator never has to open a terminal:
 
 deploy()/remove() stream progress through the given log callback and return a
 bool; callers run them off the UI thread.  requirement() is "" on platforms
-that need nothing (macOS), which is the GUI's cue to hide the whole group.
+that need nothing, which is the GUI's cue to hide the whole group.
 """
 from __future__ import annotations
 

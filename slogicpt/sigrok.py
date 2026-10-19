@@ -33,7 +33,6 @@ from .profiles import RESOURCES_DIR, format_rate
 _PLATFORM_BINARIES = {
     ("Linux", "x86_64"): "sigrok-cli-linux-x86_64",
     ("Windows", "AMD64"): "sigrok-cli-windows-x86_64.exe",
-    ("Darwin", "arm64"): "sigrok-cli-macos-arm64",
 }
 
 

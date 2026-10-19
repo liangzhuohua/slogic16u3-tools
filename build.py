@@ -35,7 +35,6 @@ REPO = Path(__file__).resolve().parent
 NAME_BY_PLATFORM = {
     ("Linux", "x86_64"): "slogic-pt-linux-x86_64",
     ("Windows", "AMD64"): "slogic-pt-windows-x86_64",
-    ("Darwin", "arm64"): "slogic-pt-macos-arm64",
 }
 
 
@@ -69,7 +68,7 @@ def build() -> int:
         "--paths", str(REPO),
         str(REPO / "slogicpt" / "__main__.py"),
     ]
-    if platform.system() in ("Windows", "Darwin"):
+    if platform.system() == "Windows":
         cmd.insert(cmd.index("--name"), "--windowed")
     if platform.system() == "Windows":
         dll = _windows_libusb_dll()

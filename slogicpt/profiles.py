@@ -36,7 +36,7 @@ OUTPUT_DIR = REPO_ROOT / "out"
 RESOURCES_DIR = REPO_ROOT / "resources"
 PRODUCTS_DIR = RESOURCES_DIR / "products"
 
-PLATFORM_KEY = {"Linux": "linux", "Windows": "windows", "Darwin": "darwin"}.get(
+PLATFORM_KEY = {"Linux": "linux", "Windows": "windows"}.get(
     platform_mod.system(), "linux")
 
 SCHEMA_VERSION = 1
@@ -359,7 +359,7 @@ def _default_cli() -> list[str]:
         # 把整个 Gowin Programmer 文件夹拷进 resources/bin/Programmer/（≈ Linux 软链）
         exe = bin_dir / "Programmer" / "bin" / "programmer_cli.exe"
         return [str(exe)] if exe.is_file() else []
-    # linux / darwin：版本无关名优先，否则 glob 兼容现有 Gowin-Programmer-<ver>-*.AppImage
+    # linux：版本无关名优先，否则 glob 兼容现有 Gowin-Programmer-<ver>-*.AppImage
     exe = bin_dir / "Gowin-Programmer-x86_64.AppImage"
     if not exe.is_file():
         hits = sorted(bin_dir.glob("Gowin-Programmer*.AppImage"))

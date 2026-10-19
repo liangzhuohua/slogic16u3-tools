@@ -7,7 +7,7 @@ One place for the things each tool wrapper used to re-implement:
   build (powershell still flashes a window), so STARTF_USESHOWWINDOW + SW_HIDE
   is added too.  Empty elsewhere.
 - tool_env():       the environment external tools should see: PyInstaller's
-  _PYI_* / _MEIPASS2 markers removed and its LD/DYLD library-path overrides
+  _PYI_* / _MEIPASS2 markers removed and its LD_LIBRARY_PATH override
   undone, so a tool resolves its own libraries, not ours; on Linux also the
   FUSE-less AppImage fallback.
 - popen_kwargs():   the above plus an own process group/session (so kill_tree
@@ -47,18 +47,17 @@ def hidden_kwargs() -> dict:
 
 def strip_pyinstaller_env(env: dict) -> None:
     """Undo what a frozen (PyInstaller) parent leaks into a child's environment:
-    the _PYI_* / _MEIPASS2 markers and the library-path overrides (saved by the
-    bootloader as <VAR>_ORIG).  No-op when not frozen."""
+    the _PYI_* / _MEIPASS2 markers and the LD_LIBRARY_PATH override (saved by
+    the bootloader as LD_LIBRARY_PATH_ORIG).  No-op when not frozen."""
     if not getattr(sys, "frozen", False):
         return
     for k in [k for k in env if k.startswith("_PYI_") or k == "_MEIPASS2"]:
         del env[k]
-    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"):
-        orig = env.pop(var + "_ORIG", None)
-        if orig is not None:
-            env[var] = orig
-        else:
-            env.pop(var, None)
+    orig = env.pop("LD_LIBRARY_PATH_ORIG", None)
+    if orig is not None:
+        env["LD_LIBRARY_PATH"] = orig
+    else:
+        env.pop("LD_LIBRARY_PATH", None)
 
 
 def tool_env() -> dict:
