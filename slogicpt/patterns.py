@@ -48,6 +48,11 @@ I2C_SCL_HZ = 100_000
 I2C_ADDR_W = 0xA0                     # 0x50 << 1 | write
 I2C_DATA = (0x12, 0x34)
 
+# M0 walking one: the fixture rotates over all 32 channels, 100 us per step,
+# whatever the analyser in front of it captures (16U3 sees only CH0..CH15).
+WIRING_STEPS = 32
+WIRING_STEP_S = 100e-6
+
 # M5 narrow pulse / M6 burst constants
 NARROW_PERIOD_CLK = 540            # 10 us at 54 MHz
 BURST_WIDTH_CLK = (8, 16, 32, 64)        # CH0..CH3 pulse widths
@@ -281,7 +286,7 @@ def _wiring(ch: int, fs: float) -> Expect:
     proved correct. Measured on the real fixture, CH1 read 10 MHz / 60% of
     crosstalk in this mode while decoding SPI perfectly in M1..M4.
     """
-    return Expect(Kind.SKIP, freq_hz=1.0 / (32 * 100e-6),
+    return Expect(Kind.SKIP, freq_hz=1.0 / (WIRING_STEPS * WIRING_STEP_S),
                   note=("walking one, 100 us per step: CH%d is the high channel "
                         "during step %d of 32; the rotation check owns this mode"
                         % (ch, ch)),

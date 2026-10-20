@@ -9,7 +9,7 @@ resources/
 ├── products/<product_id>/        # 一产品一目录，目录名 = product_id
 │   ├── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 期望信号 / 模式切换），公开入库
 │   └── firmware/                 # 固件资源（工厂本地，禁止入库/公开）
-│       └── testgen.fs            #   32U3：信号源夹具（Tang Nano 9K）位流，产测时载入夹具 SRAM
+│       └── testgen.fs            #   信号源夹具（Tang Nano 9K）位流，放在 slogic32u3/ 下；16U3 档案直接引用这一份
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
@@ -25,7 +25,7 @@ resources/
 # sigrok-cli（来自 SLogic 发布包，须 2.3.0 及以上：旧版 4ch@1400M 会回卷、8ch@800M 收不到数据）
 ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigrok-cli-linux-x86_64
 
-# 32U3 信号源夹具位流
+# 信号源夹具位流（32U3 / 16U3 共用这一份）
 cp testgen.fs           resources/products/slogic32u3/firmware/testgen.fs
 ```
 
@@ -157,5 +157,5 @@ SLogicPT/
 - `usb.dfu_pid`（16U3=0x30F1、32U3=0x30F2）可选：只用于把"还在 DFU、没烧 app 固件"的板子认出来并提示；应用固件 OTA 由批量网页工具负责；
 - `capture.samplerates` 必须填 sigrok 驱动实际支持的档位（`sigrok-cli -d <driver> --show` 查询），
   GUI 会再按 `channels × rate / 8 ≤ max_bandwidth_mbps` 过滤展示；
-- `[[capture.tests]]` 是没有 `[[plan]]`（无夹具）的产品逐组执行的测试点（如 16U3 的外置固定信号源）；
+- `[[capture.tests]]` 是没有 `[[plan]]`（无夹具）的产品逐组执行的测试点（外置固定信号源，目前没有产品在用）；
 - `[usb] links` 决定产测轮数与门槛；`[[plan]]` 每组 `configs` 的 `link` 标注它属于哪一轮。

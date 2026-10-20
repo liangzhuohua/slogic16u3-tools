@@ -291,7 +291,7 @@ def check_duty(m: Measurement, exp: Expect, tol_pp: float) -> Verdict:
 
 
 def check_order(measurements: list[Measurement], samples_per_step: float,
-                tol_steps: float = 0.5) -> Verdict:
+                tol_steps: float = 0.5, period: int | None = None) -> Verdict:
     """M3: the one-hot pattern must visit CH0, CH1, ... in order.
 
     Every channel's first rising edge should be one step later than the previous
@@ -301,8 +301,14 @@ def check_order(measurements: list[Measurement], samples_per_step: float,
     结论尽量做成"哪几路不对"而不是"排在第几位对不上"：后者是算法内部视角，
     操作员要的是去查哪根线。所以把**没边沿的**和**顺序不对的**通道放进
     `channels`，并用 `reason` 给出机器可读的一句话原因，界面据此写人话。
+
+    `period` is the length of the fixture's rotation (32).  It only matters
+    when fewer channels are captured: a 16-channel analyser sees CH15 fire and
+    then 17 silent steps before CH0.  Defaults to the captured channel count,
+    which is what the 32-channel capture always was.
     """
     n = len(measurements)
+    period = max(period or n, n)
     missing = [m.channel for m in measurements if m.first_rise is None]
     seen = [(m.channel, m.first_rise) for m in measurements
             if m.first_rise is not None]
@@ -316,15 +322,19 @@ def check_order(measurements: list[Measurement], samples_per_step: float,
     # ascend by one step each
     offsets.sort(key=lambda cs: cs[1])
     start_ch = offsets[0][0]
+    # the captured channels in firing order, each with the step it fires on
+    # relative to start_ch (one step apart when period == n)
+    expect = [(c, k) for k in range(period)
+              for c in [(start_ch + k) % period] if c < n]
     disordered = []
     first_bad = ""
     for rank, (ch, off) in enumerate(offsets):
-        want_ch = (start_ch + rank) % n
-        if ch != want_ch or abs(off - rank) > tol_steps:
+        want_ch, want_off = expect[rank] if rank < len(expect) else (-1, -1)
+        if ch != want_ch or abs(off - want_off) > tol_steps:
             disordered.append(ch)
             if not first_bad:
                 first_bad = ("rank %d: got CH%d at %.2f steps, expected CH%d at %d"
-                             % (rank, ch, off, want_ch, rank))
+                             % (rank, ch, off, want_ch, want_off))
     offenders = tuple(sorted(set(missing) | set(disordered)))
     bits = []
     if missing:
@@ -648,8 +658,9 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
     verdicts = [check_channel(m, e, tol_pct, tol_pp, sample_rate_hz)
                 for m, e in zip(ms, expects)]
     if mode == 0:
-        # 100 us per step, exactly as _new_m0 describes
-        verdicts.append(check_order(ms, samples_per_step=100e-6 * sample_rate_hz))
+        from .patterns import WIRING_STEP_S, WIRING_STEPS
+        verdicts.append(check_order(ms, samples_per_step=WIRING_STEP_S * sample_rate_hz,
+                                    period=WIRING_STEPS))
     elif mode in (1, 2, 3, 4):
         verdicts.extend(_spi_bank_verdicts(channels, sample_rate_hz, mode))
         if mode == 4:
@@ -793,6 +804,26 @@ def _selftest() -> int:
     print("  %s  (%d channels seen)" % (v3.mark, 7))
     if v3.ok:
         print("  FAIL: a dead channel was accepted"); fails += 1
+
+    print("== 16 of a 32-step rotation (16U3 in front of the fixture) ==")
+    # 10 ms, as the M0 plan captures: a channel needs two rising edges, and the
+    # 32-step rotation takes 3.2 ms
+    nch16, per, n16 = 16, 32, 2_000_000
+    t16 = np.arange(n16)
+    chans16 = np.zeros((nch16, n16), dtype=np.uint8)
+    for ch in range(nch16):
+        ph = (t16 - (ch - 10) * step - step // 2) % (per * step)   # CH10 fires first
+        chans16[ch] = (ph < step).astype(np.uint8)
+    v4 = check_order(measure_all(chans16), samples_per_step=step, period=per)
+    print("  %s  %s" % (v4.mark, v4.measured))
+    if not v4.ok:
+        print("  FAIL: partial rotation rejected"); fails += 1
+    if check_order(measure_all(chans16), samples_per_step=step).ok:
+        print("  FAIL: without period the 17-step wrap should not pass"); fails += 1
+    chans16b = chans16.copy()
+    chans16b[[3, 4]] = chans16b[[4, 3]]
+    if check_order(measure_all(chans16b), samples_per_step=step, period=per).ok:
+        print("  FAIL: swap in a partial rotation not detected"); fails += 1
 
     print()
     print("RESULT: %s" % ("OK" if not fails else "%d FAILURES" % fails))

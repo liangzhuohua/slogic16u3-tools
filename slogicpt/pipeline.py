@@ -998,14 +998,23 @@ if __name__ == "__main__":
     p.start(); done.wait(5)
     assert results["ok"] is False and ran2 == ["c1"], ran2
 
-    print("== 取消应立刻结束等待 ==")
+    print("== 取消应立刻结束换口等待，并给出失败原因 ==")
     done.clear()
-    p2 = Pipeline(profile, None, cb, [])
-    p2.steps = [StepDef("wait", "Wait", lambda: p2._wait_mode(0x7FFF, 1.0, "DFU"))]
-    threading.Timer(2.5, p2.request_cancel).start()
-    t0 = time.time()
-    p2.start(); done.wait(15)
-    elapsed = time.time() - t0
-    assert results["ok"] is False and elapsed < 6, elapsed
-    print(f"  (等待+提示+取消耗时 {elapsed:.1f}s)")
+    notes = {}
+    cb_note = PipelineCallbacks(on_log=cb.on_log, on_step=cb.on_step,
+                                on_finished=finished,
+                                on_step_note=lambda sid, n: notes.update({sid: n}))
+    device_watch.scan_devices = lambda _profiles: []          # nobody plugged in
+    try:
+        p2 = Pipeline(p32, None, cb_note, [])
+        p2.steps = [StepDef("link:replug@5G", "Replug", lambda: p2._await_link(4))]
+        threading.Timer(1.0, p2.request_cancel).start()
+        t0 = time.time()
+        p2.start(); done.wait(15)
+        elapsed = time.time() - t0
+    finally:
+        device_watch.scan_devices = real_scan
+    assert results["ok"] is False and elapsed < 4, elapsed
+    assert notes.get("link:replug@5G") == t("Cancelled"), notes
+    print(f"  (等待+取消耗时 {elapsed:.1f}s, note={notes['link:replug@5G']!r})")
     print("pipeline 引擎自测 PASS")
