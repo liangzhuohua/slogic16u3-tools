@@ -169,6 +169,11 @@ class StepNode(QWidget):
         self.info = label("", "caption")
         self.info.setAlignment(Qt.AlignHCenter)
         lay.addWidget(self.info)
+        self.note = label("", "error-caption")     # why the step failed
+        self.note.setAlignment(Qt.AlignHCenter)
+        self.note.setWordWrap(True)
+        self.note.hide()
+        lay.addWidget(self.note)
         if has_settings:
             self.gear = button(t("Test Params"), "text", "tune", "primary")
             self.gear.clicked.connect(lambda: self.settings.emit(self.sid))
@@ -303,6 +308,16 @@ class Stepper(QWidget):
             self._spin.start()
         elif not running:
             self._spin.stop()
+
+    def set_note(self, sid: str, text: str):
+        """Short failure reason under a step; the full text is its tooltip."""
+        node = self.nodes.get(sid)
+        if node is None:
+            return
+        short = text if len(text) <= 90 else text[:88] + "…"
+        node.note.setText(short.replace("; ", "\n"))      # one cause per line
+        node.note.setToolTip(text)
+        node.note.setVisible(bool(text))
 
     def set_req(self, sid: str, text: str):
         node = self.nodes.get(sid)

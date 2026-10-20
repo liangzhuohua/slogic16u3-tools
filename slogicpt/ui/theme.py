@@ -182,6 +182,7 @@ QLabel[role="title"] {{ font-size: 18px; font-weight: 600; }}
 QLabel[role="secondary"] {{ color: {c['on_surface_variant']}; }}
 QLabel[role="caption"] {{ color: {c['on_surface_variant']}; font-size: 12px; }}
 QLabel[role="warn-caption"] {{ color: {c['warning']}; font-size: 12px; }}
+QLabel[role="error-caption"] {{ color: {c['error']}; font-size: 12px; font-weight: 600; }}
 
 QFrame#card {{ background: {c['surface_low']}; border: 1px solid {c['outline_variant']};
     border-radius: 12px; }}

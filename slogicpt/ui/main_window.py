@@ -39,6 +39,7 @@ class _Step:
     status: StepStatus = StepStatus.PENDING
     t_start: float | None = None
     duration: float | None = None
+    note: str = ""                    # why it failed (shown under the step)
 
 
 class MainWindow(QMainWindow):
@@ -65,6 +66,7 @@ class MainWindow(QMainWindow):
         ctl = self.ctl
         ctl.log.connect(self._append_log)
         ctl.step.connect(self._on_step)
+        ctl.step_note.connect(self._on_step_note)
         ctl.prompt.connect(self._on_prompt)
         ctl.prompt_clear.connect(self._on_prompt_clear)
         ctl.manual_switch.connect(self._on_manual_switch)
@@ -423,13 +425,14 @@ class MainWindow(QMainWindow):
         for step_id, name in plan:
             prev = old.get(step_id)
             self._steps[step_id] = _Step(name, *(
-                (prev.status, prev.t_start, prev.duration) if prev else ()))
+                (prev.status, prev.t_start, prev.duration, prev.note) if prev else ()))
             self._fixture_need[step_id] = self._fixture_need_of(step_id, has_fixture)
             rows.append((step_id, name, "", step_id.startswith("capture")))
         self.stepper.set_steps(rows)
         self._render_fixture_reqs()
         for step_id, s in self._steps.items():
             self.stepper.set_status(step_id, s.status, s.duration)
+            self.stepper.set_note(step_id, s.note)
         self._update_enablement()
 
     @staticmethod
@@ -448,11 +451,19 @@ class MainWindow(QMainWindow):
             self.stepper.set_req(sid, t("Requires Tang Nano 9K plugged in")
                                  if need and not present else "")
 
+    def _on_step_note(self, sid: str, note: str):
+        s = self._steps.get(sid)
+        if s is not None:
+            s.note = note
+            self.stepper.set_note(sid, note)
+
     def _on_step(self, sid: str, status: StepStatus):
         s = self._steps.get(sid)
         if s is not None:
             if status == StepStatus.RUNNING and s.t_start is None:
                 s.t_start = time.time()
+                s.note = ""
+                self.stepper.set_note(sid, "")
             if status in (StepStatus.PASSED, StepStatus.FAILED) and s.t_start:
                 s.duration = time.time() - s.t_start
             s.status = status
@@ -499,9 +510,9 @@ class MainWindow(QMainWindow):
         else:
             sub = " · ".join(x for x in (p.display_name if p else "",
                                          f"{d['elapsed']:.1f}s") if x)
-            failed = [s.label for s in self._steps.values()
-                      if s.status == StepStatus.FAILED]
-            detail = (t("Failed steps: {items}").format(items=", ".join(failed))
+            failed = [s.label + (f" — {s.note}" if s.note else "")
+                      for s in self._steps.values() if s.status == StepStatus.FAILED]
+            detail = (t("Failed steps: {items}").format(items="\n".join(failed))
                       if kind == "fail" and failed else "")
             self.result_card.set_state(kind, "PASS" if kind == "pass" else "FAIL",
                                        sub, detail, caption)
@@ -550,7 +561,9 @@ class MainWindow(QMainWindow):
                 s = self._steps.get(step.id)
                 if s is not None:
                     s.status, s.t_start, s.duration = StepStatus.PENDING, None, None
+                    s.note = ""
                     self.stepper.set_status(step.id, s.status)
+                    self.stepper.set_note(step.id, "")
         self._prompt = ""
         self._show_result("running")
         self._update_enablement()

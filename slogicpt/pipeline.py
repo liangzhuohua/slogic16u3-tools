@@ -45,6 +45,8 @@ class PipelineCallbacks:
     on_user_prompt_clear: Callable[[], None] = lambda: None
     # 模式切换只剩人工方案（按板载 MODE 键）时的弹窗提示（GUI 弹 QMessageBox）
     on_manual_switch: Callable[[str], None] = lambda s: None
+    # one-line reason a step failed, sent just before its FAILED status
+    on_step_note: Callable[[str, str], None] = lambda name, note: None
     on_finished: Callable[[bool, str], None] = lambda ok, report: None
 
 
@@ -265,7 +267,10 @@ class Pipeline:
                 self.cb.on_step(step.id, StepStatus.RUNNING)
                 if self.cancel.is_set():
                     raise PipelineAbort(t("Cancelled"))
+                r0, f0 = len(self.report_lines), len(self.failures)
                 ok = step.run()
+                if not ok:
+                    self.cb.on_step_note(step.id, self._step_note(r0, f0))
                 self.cb.on_step(step.id,
                                 StepStatus.PASSED if ok else StepStatus.FAILED)
                 if not ok:
@@ -319,6 +324,35 @@ class Pipeline:
             if self.app_serial:
                 lines.insert(0, f"APP SN: {self.app_serial}")
             self.cb.on_finished(all_pass, "\n".join(lines))
+
+    def _step_note(self, r0: int, f0: int) -> str:
+        """One line on why a step failed, built from the report lines and the
+        failing verdicts it added: "M5: CH20 CH21 (freq); M0: capture failed".
+        Display only -- the verdict itself was made by the step."""
+        if self.cancel.is_set():
+            return t("Cancelled")
+        parts: dict[str, str] = {}
+        new_fail = self.failures[f0:]
+        for ln in self.report_lines[r0:]:
+            if ": FAIL" not in ln:
+                continue
+            head, _, rest = ln.partition(": FAIL")
+            reason = rest.strip().strip("()").strip()
+            mode = head.split()[0] if head[:1] == "M" and head[1:2].isdigit() else None
+            if mode is None:
+                parts.setdefault(head, reason or "FAIL")
+                continue
+            if mode in parts:
+                continue
+            chans = [f for f in new_fail if f[0].split()[0] == mode]
+            if chans:
+                where = list(dict.fromkeys(c[1] for c in chans))
+                kinds = "/".join(dict.fromkeys(str(c[2]) for c in chans))
+                shown = " ".join(where[:6]) + (" …" if len(where) > 6 else "")
+                parts[mode] = f"{shown} ({kinds})"
+            else:
+                parts[mode] = reason
+        return "; ".join(f"{k}: {v}" if v else k for k, v in parts.items())
 
     # ---- steps -----------------------------------------------------------
 

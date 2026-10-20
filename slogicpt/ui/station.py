@@ -30,6 +30,7 @@ from ..profiles import ProductProfile
 class StationController(QObject):
     log = pyqtSignal(str)
     step = pyqtSignal(str, object)               # step id, StepStatus
+    step_note = pyqtSignal(str, str)             # step id, why it failed
     prompt = pyqtSignal(str)
     prompt_clear = pyqtSignal()
     manual_switch = pyqtSignal(str)
@@ -164,6 +165,7 @@ class StationController(QObject):
         return pipeline_mod.PipelineCallbacks(
             on_log=self.log.emit,
             on_step=lambda sid, st: self.step.emit(sid, st),
+            on_step_note=lambda sid, note: self.step_note.emit(sid, note),
             on_user_prompt=self.prompt.emit,
             on_user_prompt_clear=self.prompt_clear.emit,
             on_manual_switch=self.manual_switch.emit,
