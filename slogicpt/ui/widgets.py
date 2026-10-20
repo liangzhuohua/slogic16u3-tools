@@ -120,14 +120,10 @@ class _StepDot(QWidget):
                     StepStatus.WAITING_USER: "hourglass"}[st]
             icons.paint(p, name, "on_" + fill, r.adjusted(8, 8, -8, -8))
         else:
-            dim = st == StepStatus.SKIPPED
-            p.setPen(QPen(theme.qcolor("outline_variant" if dim else "outline"), 1.5))
+            p.setPen(QPen(theme.qcolor("outline"), 1.5))
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(r.adjusted(1, 1, -1, -1))
-            if dim:
-                icons.paint(p, "remove", "outline", r.adjusted(9, 9, -9, -9))
-            else:
-                self._number(p, r, "on_surface_variant")
+            self._number(p, r, "on_surface_variant")
 
     def _number(self, p: QPainter, r: QRectF, tok: str):
         f = QFont(self.font())

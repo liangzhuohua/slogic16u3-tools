@@ -32,8 +32,9 @@ has an unpredictable edge pattern. This is not theory: CH0 is 108 MHz and at
 32ch@200M it is above the 100 MHz Nyquist, and it measured 55.14 MHz where a
 naive fundamental-alias calculation predicts 92 MHz.
 
-So above Nyquist the channel is marked `skip` and reported without a verdict,
-rather than being failed for something the instrument cannot be asked to do.
+So a channel above Nyquist is marked UNMEASURABLE, and an unmeasurable channel
+FAILS: the profile asked for a rate that cannot verify it and has to be fixed.
+There is no third outcome -- every verdict is a pass or a fail.
 """
 from __future__ import annotations
 
@@ -62,8 +63,13 @@ class Kind(Enum):
     FREQ = "freq"          # verify frequency
     STATIC = "static"      # verify a constant level
     DUTY = "duty"          # verify frequency and duty
-    SKIP = "skip"          # report the reading, pass no verdict
-    PROTOCOL = "protocol"  # decode and check the content
+    PROTOCOL = "protocol"  # decode and check the content (a structured check)
+    # No verdict of its own: the cross-channel check named in judged_by judges
+    # it (rotation, narrow-pulse widths, burst fill ...).
+    STRUCTURED = "structured"
+    # This capture cannot verify the channel (above Nyquist, window too short):
+    # a test-design fault, so it FAILS until the profile is fixed.
+    UNMEASURABLE = "unmeasurable"
 
 
 @dataclass(frozen=True)
@@ -75,25 +81,19 @@ class Expect:
     static: int | None = None          # 0/1 when kind is STATIC
     duty_pct: float | None = None
     note: str = ""
-    # 这一路的判定权**交给哪个结构化检查**（"走线轮转检查"/"突发结构检查"…）。
-    #
-    # 只有"刻意把判定权移交出去"才填这里。空着 + kind=SKIP 的含义完全不同：
-    # 那是"**没人判得了这一路**"（采集参数配不上信号），属于测试设计缺陷，
-    # check_channel 会把它判成 FAIL 而不是放过去 —— 见 checks.py 的说明。
-    covered_by: str = ""
-
-    @property
-    def checkable(self) -> bool:
-        return self.kind is not Kind.SKIP
+    # Kind.STRUCTURED: which cross-channel check judges this channel
+    # ("走线轮转检查" / "窄脉冲宽度检查" / "突发填充检查" ...).
+    judged_by: str = ""
 
 
 def _nyquist(samplerate_hz: float) -> float:
     return samplerate_hz / 2.0
 
 
-def _freq_or_skip(ch: int, f: float, fs: float, duty: float | None = None,
+def _freq_or_unmeasurable(ch: int, f: float, fs: float, duty: float | None = None,
                   note: str = "") -> Expect:
-    """Frequency expectation, downgraded to SKIP when it cannot be measured.
+    """Frequency expectation, or UNMEASURABLE (a fail) when this rate cannot
+    measure it.
 
     Two separate limits apply to a SQUARE wave, not just one:
 
@@ -101,26 +101,26 @@ def _freq_or_skip(ch: int, f: float, fs: float, duty: float | None = None,
       2. so must its harmonics, because the edge detector counts transitions and
          every folded harmonic contributes extra ones.
 
-    Checking only (1) produced a confidently wrong number instead of a skip. On
+    Checking only (1) produced a confidently wrong number instead of a fail. On
     the real fixture M1's CH0 is 108 MHz; at 16ch@400M the fundamental is
     comfortably under the 200 MHz Nyquist, yet the analyser reported 92.636 MHz --
     exactly the 200 MSa/s alias of 108 MHz. The third harmonic at 324 MHz had
     folded back and corrupted the edge pattern. A wrong number is worse than no
-    number, so anything whose 3rd harmonic crosses Nyquist is reported, not judged.
+    number, so anything whose 3rd harmonic crosses Nyquist is unmeasurable.
     """
     if f >= _nyquist(fs):
         alias = abs(f - fs * round(f / fs)) if fs else 0.0
-        return Expect(Kind.SKIP, freq_hz=f, duty_pct=duty,
+        return Expect(Kind.UNMEASURABLE, freq_hz=f, duty_pct=duty,
                       note=("%.4g Hz is above the %.4g Hz Nyquist at this rate "
                             "(fundamental alias would be %.4g Hz, but a square "
                             "wave's harmonics fold back too, so the edge rate is "
                             "not predictable)%s" % (f, _nyquist(fs), alias,
                                                     ("; " + note) if note else "")))
     if 3.0 * f >= _nyquist(fs):
-        return Expect(Kind.SKIP, freq_hz=f, duty_pct=duty,
+        return Expect(Kind.UNMEASURABLE, freq_hz=f, duty_pct=duty,
                       note=("%.4g Hz is below the %.4g Hz Nyquist, but its 3rd "
                             "harmonic at %.4g Hz is not, and a folded harmonic "
-                            "corrupts edge counting -- reported, not judged%s"
+                            "corrupts edge counting%s"
                             % (f, _nyquist(fs), 3.0 * f,
                                ("; " + note) if note else "")))
     return Expect(Kind.DUTY if duty is not None else Kind.FREQ,
@@ -134,7 +134,7 @@ def _freq_or_skip(ch: int, f: float, fs: float, duty: float | None = None,
 
 def _narrow_pulse(ch: int, fs: float) -> Expect:
     if ch == 0:
-        return _freq_or_skip(ch, CLK_SYS_HZ / NARROW_PERIOD_CLK, fs,
+        return _freq_or_unmeasurable(ch, CLK_SYS_HZ / NARROW_PERIOD_CLK, fs,
                              note="18.5 ns wide, once per 10 us")
     if ch == 1:
         # Was a 4.63 ns pulse from fast_out on the 216 MHz clock. The fast domain
@@ -146,26 +146,26 @@ def _narrow_pulse(ch: int, fs: float) -> Expect:
                            "when the fast domain moved to 108 MHz (148 ns there, "
                            "wider than CH0's 18.5 ns, so it added nothing)")
     if ch == 2:
-        return Expect(Kind.SKIP, freq_hz=CLK_SYS_HZ / NARROW_PERIOD_CLK,
+        return Expect(Kind.STRUCTURED, freq_hz=CLK_SYS_HZ / NARROW_PERIOD_CLK,
                       note="two 18.5 ns pulses 18.5 ns apart; a normal capture "
                            "merges them, so the edge rate is not a stable verdict",
-                      covered_by="窄脉冲宽度检查")
+                      judged_by="窄脉冲宽度检查")
     if ch == 3:
-        return Expect(Kind.SKIP, freq_hz=1000.0,
+        return Expect(Kind.STRUCTURED, freq_hz=1000.0,
                       note="one 18.5 ns pulse per 1 ms -- a trigger test, too rare "
                            "for a reliable edge-rate verdict",
-                      covered_by="窄脉冲宽度检查")
+                      judged_by="窄脉冲宽度检查")
     if ch == 4:
-        return Expect(Kind.SKIP,
+        return Expect(Kind.STRUCTURED,
                       note="width ladder 1,2,4,...,128 clk_sys (18.5 ns ~ 2370 ns), "
                            "8 rungs, one rung per 10 us so a full sweep is 80 us",
-                      covered_by="窄脉冲宽度检查")
+                      judged_by="窄脉冲宽度检查")
     # Adjacent fill channels run in anti-phase (testgen 2026-10-20: CH6, CH8, ...
     # are inverted).  With all 27 in phase, every edge was 27 simultaneous
     # same-direction transitions, and the resulting common-mode disturbance
     # put 5-25 ns glitches on the 1.8 V bank 3 channels.  Frequency and duty
     # are unchanged, so the expectation is too.
-    return _freq_or_skip(ch, 1000.0, fs,
+    return _freq_or_unmeasurable(ch, 1000.0, fs,
                          note="1 kHz reference fill, adjacent channels in anti-phase")
 
 
@@ -173,20 +173,20 @@ def _burst(ch: int, fs: float) -> Expect:
     if ch < 4:
         width_clk = BURST_WIDTH_CLK[ch]
         width_ns = width_clk / (CLK_SYS_HZ / 1e9)
-        return Expect(Kind.SKIP,
+        return Expect(Kind.STRUCTURED,
                       freq_hz=CLK_SYS_HZ / NARROW_PERIOD_CLK,
                       note=("%d clocks = %.1f ns wide, repeated every 10 us, but "
                             "only during a 1 ms burst that recurs every 20 ms; "
                             "the measured rate therefore depends on the capture "
                             "window, so the structured check owns this channel"
                             % (width_clk, width_ns)),
-                      covered_by="突发结构检查")
+                      judged_by="突发结构检查")
     # B_PERIOD 已经是 20 ms（原来是 100 ms，没有哪个窗口负担得起），所以静默是
     # 19 ms 而不是 99 ms，均值是 50 Hz 而不是 10 Hz —— 实测 M6 的 CH4 读到的正是
     # 50 Hz，证明这里原来那行注释和 freq_hz 都是过时的。
-    return Expect(Kind.SKIP, freq_hz=50.0,
+    return Expect(Kind.STRUCTURED, freq_hz=50.0,
                   note="1 kHz during the 1 ms burst, silent for 19 ms -> 50 Hz mean",
-                  covered_by="突发填充检查")
+                  judged_by="突发填充检查")
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ def _spi_bank_mode(ch: int, fs: float, mode: int) -> Expect:
         # Past the bank. Only M4 has anything here, and those channels belong to
         # the I2C and UART generators.
         if mode == 4 and ch == SPI_M4_I2C_SCL:
-            return _freq_or_skip(ch, I2C_SCL_HZ, fs, note="I2C SCL")
+            return _freq_or_unmeasurable(ch, I2C_SCL_HZ, fs, note="I2C SCL")
         if mode == 4 and ch == SPI_M4_I2C_SDA:
             return Expect(Kind.PROTOCOL,
                           note=("I2C SDA: one write transaction per frame, "
@@ -253,9 +253,9 @@ def _spi_bank_mode(ch: int, fs: float, mode: int) -> Expect:
         return Expect(Kind.STATIC, static=0, note="not driven in this mode")
 
     if pos == 0:
-        return _freq_or_skip(ch, sclk_hz, fs, note="SPI%d SCLK" % inst)
+        return _freq_or_unmeasurable(ch, sclk_hz, fs, note="SPI%d SCLK" % inst)
     if pos == 3:
-        return _freq_or_skip(ch, cs_hz, fs,
+        return _freq_or_unmeasurable(ch, cs_hz, fs,
                              note="SPI%d CS_N: exactly one word per CS pulse"
                                   % inst)
     # MOSI and MISO carry a known word; edge counting would only measure how
@@ -273,7 +273,7 @@ def _spi_bank_mode(ch: int, fs: float, mode: int) -> Expect:
 def _wiring(ch: int, fs: float) -> Expect:
     """Walking one: exactly one channel high at a time, rotating CH0..CH31.
 
-    Every channel is deliberately SKIP here and the verdict comes from the
+    No channel has a verdict of its own here; the verdict comes from the
     rotation check instead. WHICH channel is high during which step is what
     identifies a wire, and check_order proves it across all 32 at once -- it
     requires every channel to show a rising edge and then every one of them to
@@ -286,11 +286,11 @@ def _wiring(ch: int, fs: float) -> Expect:
     proved correct. Measured on the real fixture, CH1 read 10 MHz / 60% of
     crosstalk in this mode while decoding SPI perfectly in M1..M4.
     """
-    return Expect(Kind.SKIP, freq_hz=1.0 / (WIRING_STEPS * WIRING_STEP_S),
+    return Expect(Kind.STRUCTURED, freq_hz=1.0 / (WIRING_STEPS * WIRING_STEP_S),
                   note=("walking one, 100 us per step: CH%d is the high channel "
                         "during step %d of 32; the rotation check owns this mode"
                         % (ch, ch)),
-                  covered_by="走线轮转检查")
+                  judged_by="走线轮转检查")
 
 
 _MODES = {
@@ -330,7 +330,7 @@ NEEDS_THRESHOLD_GROUPS = {4, 5, 6}
 # 6.75 MHz）边沿很快、1.5 V 下也能正确穿越，所以这个遗漏一直没暴露；
 # M5 的 1 kHz 慢边沿在阈值附近停留久，才把它显出来。
 #
-# 结构化判定的合并规则已同步修正（见 pipeline._run_mode_config）：阈值组轮只覆盖
+# 结构化判定的合并规则已同步修正（见 pipeline._run_mode_config）：阈值组轮只接管
 # "通道落在该组里"的结构化判定，所以 M5 的窄脉冲检查（CH2~CH4，3.3 V 那侧）仍然
 # 用 1.5 V 那轮判，不会被 0.9 V 这轮污染。
 #
@@ -349,8 +349,8 @@ def expected(mode: int, nch: int, samplerate_hz: float,
     `window_s` is the capture length in seconds. A channel needs several periods
     inside the window to yield a usable edge train: at two periods the measurement
     is fragile, and at less than one period there is often only a single rising
-    edge and no frequency at all. Any channel slower than that is downgraded to
-    SKIP rather than failed -- the instrument is not being asked a fair question.
+    edge and no frequency at all. Any channel slower than that is UNMEASURABLE,
+    which fails: the profile has to declare a long enough window.
 
     So a profile must declare a window long enough for its slowest checked
     channel (M5's 1 kHz fill needs >= 3 ms).
@@ -367,7 +367,7 @@ def expected(mode: int, nch: int, samplerate_hz: float,
                 period = 1.0 / e.freq_hz
                 if period * min_cycles > window_s:
                     out[ch] = Expect(
-                        Kind.SKIP, freq_hz=e.freq_hz, duty_pct=e.duty_pct,
+                        Kind.UNMEASURABLE, freq_hz=e.freq_hz, duty_pct=e.duty_pct,
                         note=("%s is slower than the %.0f ms capture window "
                               "(%.0f ms period, %.1f cycles fit); needs a window of "
                               "at least %.0f ms to verify"
@@ -408,7 +408,7 @@ def _selftest() -> int:
           "verdict owned by the rotation check ==")
     e = expected(0, 32, 200e6)
     check(all(near(x.freq_hz, 312.5) for x in e), "every channel 312.5 Hz")
-    check(all(x.kind is Kind.SKIP for x in e), "per-channel verdict handed to 'order'")
+    check(all(x.kind is Kind.STRUCTURED for x in e), "per-channel verdict handed to 'order'")
 
     print("== M1..M4 SPI banks: SCLK rate, CS_N word rate, per-instance words ==")
     for mode, nch, fs, sclk in ((1, 4, 1400e6, 54e6), (2, 8, 800e6, 27e6),
@@ -439,7 +439,7 @@ def _selftest() -> int:
     e = expected(5, 32, 200e6)
     check(e[0].kind is Kind.FREQ and near(e[0].freq_hz, 100_000.0), "CH0 100 kHz")
     check(e[1].kind is Kind.STATIC and e[1].static == 0, "CH1 held low")
-    check(all(x.kind is Kind.SKIP for x in e[2:5]),
+    check(all(x.kind is Kind.STRUCTURED for x in e[2:5]),
           "CH2..CH4 widths owned by the narrow-pulse width check")
     check(all(x.kind is Kind.FREQ and near(x.freq_hz, 1000.0) for x in e[5:]),
           "CH5..CH31 1 kHz fill")
@@ -447,8 +447,8 @@ def _selftest() -> int:
 
     print("== M6 burst: envelope owned by the burst check ==")
     e = expected(6, 32, 200e6)
-    check(all(x.kind is Kind.SKIP for x in e), "every channel handed to 'burst'")
-    check(all(x.covered_by == "突发填充检查" for x in e[4:]),
+    check(all(x.kind is Kind.STRUCTURED for x in e), "every channel handed to 'burst'")
+    check(all(x.judged_by == "突发填充检查" for x in e[4:]),
           "CH4.. judged one by one by the fill check")
     check(6 in NEEDS_THRESHOLD_GROUPS, "M6 also captured at the bank-3 threshold")
     check(all(near(x.freq_hz, 50.0) for x in e[4:]),

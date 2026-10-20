@@ -563,11 +563,14 @@ class MainWindow(QMainWindow):
         self._update_enablement()
 
     def _on_finished(self, ok: bool, detail: str, elapsed: float):
-        # a cancelled run leaves its current step without a final status
+        # a cancelled run leaves its current step without a final status: it did
+        # not pass, so it failed
         for sid, s in self._steps.items():
             if s.status in (StepStatus.RUNNING, StepStatus.WAITING_USER):
-                s.status = StepStatus.SKIPPED
+                s.status = StepStatus.FAILED
+                s.note = s.note or t("Cancelled")
                 self.stepper.set_status(sid, s.status, s.duration)
+                self.stepper.set_note(sid, s.note)
         self._prompt = ""
         if self.ctl.armed:
             self._caption = "remove"

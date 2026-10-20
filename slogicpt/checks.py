@@ -193,7 +193,7 @@ def _mean_period(periods: np.ndarray) -> float:
         问题"（只提示、不改判），让人去查探头而不是误判成板子坏。
 
     代价：频率对毛刺敏感。实测飞线台架上 M5 的 CH2（真值 100 kHz）会读成
-    27 MHz —— 该通道本来就是 SKIP，所以不影响判定；换成同轴探头线（补上
+    27 MHz —— 该通道由窄脉冲宽度检查判、不判频率，所以不影响判定；换成同轴探头线（补上
     AFE 的 100 Ω+15 pF）振铃会明显减小。
     """
     if periods.size == 0:
@@ -214,7 +214,7 @@ def measure_all(channels: np.ndarray, glitch_frac: float = 0.0) -> list[Measurem
 @dataclass
 class Verdict:
     channel: int
-    ok: bool | None                    # None = not checkable (skip)
+    ok: bool                           # pass or fail -- there is no third outcome
     kind: str = ""
     measured: str = ""
     expected: str = ""
@@ -242,8 +242,6 @@ class Verdict:
 
     @property
     def mark(self) -> str:
-        if self.ok is None:
-            return "SKIP"
         return "ok" if self.ok else "** FAIL **"
 
 
@@ -355,48 +353,36 @@ def check_order(measurements: list[Measurement], samples_per_step: float,
 
 
 def check_channel(m: Measurement, exp: Expect, tol_pct: float, tol_pp: float,
-                  sample_rate_hz: float) -> Verdict:
+                  sample_rate_hz: float) -> Verdict | None:
     """Run whichever check `exp.kind` calls for.
 
-    **判定只有"通过 / 不通过"两种结果。** "测不了"不是一个中性答案，它必须
-    分清是谁的责任：
+    **判定只有"通过 / 失败"两种结果，没有第三种。**
 
-      * 判定权**刻意移交**给了结构化检查（`exp.covered_by` 非空）-> `ok=None`、
-        `kind="covered"`，界面显示成"由 XX 检查覆盖" —— 它其实被测到了，只是
-        判定形态不同（比如 M0 的走线顺序、M1~M4 的 SPI 内容）；
-      * **没人判得了这一路**（采样率/窗口配不上信号）-> **`ok=False`**、
-        `kind="unjudged"`。以前这种会变成 SKIP，等于让"我们自己把采集参数配错了"
-        悄悄放行；现在它直接判红，逼人去修档案而不是让它沉默。
+      * 这一路由某个结构化检查判（`Kind.STRUCTURED`：走线轮转、窄脉冲宽度、
+        突发填充；`Kind.PROTOCOL`：SPI/I2C/UART 解码）-> 返回 None，即**本路
+        不单独出判定**，它的数据在那条结构化判定里被判；
+      * 采集参数配不上这一路（`Kind.UNMEASURABLE`：超奈奎斯特、窗口太短）->
+        **失败**，`kind="unjudged"`，逼人去修档案，而不是让它悄悄放行。
     """
-    if exp.kind is Kind.SKIP:
+    if exp.kind in (Kind.STRUCTURED, Kind.PROTOCOL):
+        return None
+    if exp.kind is Kind.UNMEASURABLE:
         got = _fmt_freq(m.freq_hz * sample_rate_hz) if m.toggling \
             else "static %s" % m.static
         want = _fmt_freq(exp.freq_hz) if exp.freq_hz else ""
-        if exp.covered_by:
-            return Verdict(m.channel, None, "covered", got, want,
-                           "由「%s」覆盖，本路不用边沿率判" % exp.covered_by)
         return Verdict(m.channel, False, "unjudged", got, want,
                        "测试点未被判定：%s" % exp.note,
                        reason="unjudged")
-
     if exp.kind is Kind.STATIC:
-        v = check_static(m, exp)
-    elif exp.kind is Kind.DUTY:
+        return check_static(m, exp)
+    if exp.kind is Kind.DUTY:
         fv = check_freq(m, exp, tol_pct, sample_rate_hz)
         dv = check_duty(m, exp, tol_pp)
-        v = Verdict(m.channel, fv.ok and dv.ok, "duty",
-                    "%s / %s" % (fv.measured, dv.measured),
-                    "%s / %s" % (fv.expected, dv.expected),
-                    "%s; %s" % (fv.detail, dv.detail), sub=[fv, dv])
-    elif exp.kind is Kind.FREQ:
-        v = check_freq(m, exp, tol_pct, sample_rate_hz)
-    else:
-        # PROTOCOL：逐通道只报读数，内容判定归各自的解码器 —— 所以
-        # 这是"覆盖"，不是"没判"。
-        v = Verdict(m.channel, None, "covered",
-                    _fmt_freq(m.freq_hz * sample_rate_hz) if m.toggling else "static",
-                    "", "由内容解码器覆盖（%s）" % exp.note)
-    return v
+        return Verdict(m.channel, fv.ok and dv.ok, "duty",
+                       "%s / %s" % (fv.measured, dv.measured),
+                       "%s / %s" % (fv.expected, dv.expected),
+                       "%s; %s" % (fv.detail, dv.detail), sub=[fv, dv])
+    return check_freq(m, exp, tol_pct, sample_rate_hz)
 
 
 # ---------------------------------------------------------------------------
@@ -439,9 +425,8 @@ def _spi_bank_verdicts(channels: np.ndarray, sample_rate_hz: float,
                       "- the capture may be too short to hold a whole word, or "
                       "SCLK/CS_N are not reaching the analyser"
                       % (c, c + 3, inst.sclk_hz / 1e6, c))
-        # The channel is reported as -1 so the per-channel merge keeps this
-        # verdict instead of letting a SKIP placeholder overwrite it. The
-        # channels involved are named in the text.
+        # A structured verdict carries channel -1 and names its channels in
+        # the text, so the pipeline keeps it apart from per-channel verdicts.
         out.append(Verdict(-1, inst.ok, "spi%d" % inst.instance,
                            got, want, detail,
                            channel_text="CH%d..CH%d" % (c, c + 3),
@@ -535,7 +520,7 @@ def _high_widths(s: np.ndarray) -> tuple[list[int], list[int]]:
 def _narrow_pulse_verdicts(channels: np.ndarray, sample_rate_hz: float) -> list[Verdict]:
     """M5 的 CH2/CH3/CH4：判**脉冲宽度**，不判边沿率。
 
-    这三路的信号形态让"频率"这个判据失效（档案里原本就标成 SKIP），但它们的
+    这三路的信号形态让"频率"这个判据失效（不单独出逐通道判定），但它们的
     真实意图是**窄脉冲捕获能力**，完全可以用宽度来判：
 
       CH2  两个 18.5 ns 的脉冲，**相隔 18.5 ns**（能不能分辨开）
@@ -612,8 +597,7 @@ def _burst_verdicts(channels: np.ndarray, sample_rate_hz: float) -> list[Verdict
     #
     # 以前这里一条通道一条判定、而且带的是正数通道号，于是被 pipeline 的
     # `verdicts_by_channel.setdefault(v.channel, v)` 静默丢掉 —— 通道 0..3 早被
-    # 逐通道判定占住了。结果 M6 只剩 32 条全 SKIP 的逐通道判定，报
-    # "0 ok / 0 fail / 32 skip" 看着像通过，其实 burst 判定从来没跑过。
+    # 逐通道占位判定占住了，结果 M6 看着像通过，其实 burst 判定从来没跑过。
     # 结构化判定一律用 channel<0 + channel_text，才会按 kind 进 extra 保留下来。
     widths_clk = (8, 16, 32, 64)
     clk_ns = 1e9 / 54e6
@@ -655,33 +639,33 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
     **不改变任何 ok 值**。
     """
     ms = measure_all(channels, glitch_frac)
-    verdicts = [check_channel(m, e, tol_pct, tol_pp, sample_rate_hz)
-                for m, e in zip(ms, expects)]
+    # one entry per channel; None = judged by a structured check below
+    per_ch = [check_channel(m, e, tol_pct, tol_pp, sample_rate_hz)
+              for m, e in zip(ms, expects)]
+    structured: list[Verdict] = []
     if mode == 0:
         from .patterns import WIRING_STEP_S, WIRING_STEPS
-        verdicts.append(check_order(ms, samples_per_step=WIRING_STEP_S * sample_rate_hz,
-                                    period=WIRING_STEPS))
+        structured.append(check_order(ms, samples_per_step=WIRING_STEP_S * sample_rate_hz,
+                                      period=WIRING_STEPS))
     elif mode in (1, 2, 3, 4):
-        verdicts.extend(_spi_bank_verdicts(channels, sample_rate_hz, mode))
+        structured.extend(_spi_bank_verdicts(channels, sample_rate_hz, mode))
         if mode == 4:
-            verdicts.extend(_protocol_verdicts(channels, sample_rate_hz, mode))
+            structured.extend(_protocol_verdicts(channels, sample_rate_hz, mode))
     elif mode == 5:
         # CH2/CH3/CH4 判脉冲宽度（它们用边沿率判不了），CH0/CH1/CH5+ 仍走逐通道频率
-        verdicts.extend(_narrow_pulse_verdicts(channels, sample_rate_hz))
+        structured.extend(_narrow_pulse_verdicts(channels, sample_rate_hz))
     elif mode == 6:
-        verdicts.extend(_burst_verdicts(channels, sample_rate_hz))
-        # CH4 and up are judged one by one by the fill check, replacing their
-        # "covered" placeholder -- per channel, so a threshold-group pass takes
-        # over exactly its own channels
+        structured.extend(_burst_verdicts(channels, sample_rate_hz))
+        # CH4 and up are judged one by one by the fill check -- per channel, so
+        # a threshold-group pass takes over exactly its own channels
         complete, every = deep_checks.burst_windows(channels[0], sample_rate_hz)
-        for c in range(4, min(len(verdicts), channels.shape[0])):
-            if verdicts[c].channel != c:
-                continue
+        for c in range(4, min(len(per_ch), channels.shape[0])):
             r = deep_checks.check_burst_fill(channels[c], sample_rate_hz,
                                              complete, every)
-            verdicts[c] = Verdict(c, r.ok, "burst-fill", r.measured,
-                                  "1 kHz for 0.5 ms of each 1 ms burst, low between",
-                                  r.detail, reason="" if r.ok else "burst_fill")
+            per_ch[c] = Verdict(c, r.ok, "burst-fill", r.measured,
+                                "1 kHz for 0.5 ms of each 1 ms burst, low between",
+                                r.detail, reason="" if r.ok else "burst_fill")
+    verdicts = [v for v in per_ch if v is not None] + structured
 
     # 只标注、不改判：某条逐通道失败如果换成"滤掉窄毛刺"的读法本可通过，那它
     # **可能**是探头振铃/接地不良（测量问题）而不是板子的问题。判定层不替人下
@@ -690,12 +674,13 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
         try:
             ms_f = measure_all(channels, 0.1)
             for v in verdicts:
-                if v.ok is not False or v.channel < 0 or v.channel >= len(ms_f):
+                if v.ok or v.channel < 0 or v.channel >= len(ms_f):
                     continue
                 if v.channel >= len(expects):
                     continue
-                if check_channel(ms_f[v.channel], expects[v.channel],
-                                 tol_pct, tol_pp, sample_rate_hz).ok:
+                vf = check_channel(ms_f[v.channel], expects[v.channel],
+                                   tol_pct, tol_pp, sample_rate_hz)
+                if vf is not None and vf.ok:
                     v.suspect = (
                         "这条失败是窄毛刺造成的（把窄毛刺滤掉后本可通过）—— "
                         "可能是探头振铃/接地不良，也可能是板子或固件真的产生了"
@@ -705,12 +690,10 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
     return verdicts
 
 
-def summarise(verdicts: list[Verdict]) -> tuple[bool, int, int, int]:
-    """(ok, passed, failed, skipped)."""
-    p = sum(1 for v in verdicts if v.ok is True)
-    f = sum(1 for v in verdicts if v.ok is False)
-    s = sum(1 for v in verdicts if v.ok is None)
-    return (f == 0, p, f, s)
+def summarise(verdicts: list[Verdict]) -> tuple[bool, int, int]:
+    """(ok, passed, failed)."""
+    f = sum(1 for v in verdicts if not v.ok)
+    return (f == 0, len(verdicts) - f, f)
 
 
 # ---------------------------------------------------------------------------

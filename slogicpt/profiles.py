@@ -163,7 +163,7 @@ class PlanEntry:
 
     mode: int
     label: str
-    ready: bool                          # False -> report SKIP with `note`
+    ready: bool                          # False -> the mode FAILS with `note`
     note: str
     checks: tuple[str, ...]
     configs: tuple[PlanConfig, ...]
@@ -241,8 +241,8 @@ def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
     """Parse [signal_source]. Absent section -> an inert "none" source."""
     raw = doc.get("signal_source")
     if not raw:
-        # Profiles written before the fixture existed have no signal_source. They
-        # keep working: the capture steps just report SKIP instead of failing.
+        # A product without a fixture has no signal_source; it is tested by its
+        # [[capture.tests]] against an external fixed source instead.
         return SignalSource(kind="none", serial="auto", vid=0x0403, pid=0x6010,
                             baud=115200, settle_ms=400, reply_timeout_ms=1000,
                             firmware=None, firmware_run=2,

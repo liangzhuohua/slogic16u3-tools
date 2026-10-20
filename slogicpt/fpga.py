@@ -73,7 +73,7 @@ BAUD = 115200
 
 
 class SignalSourceNotFound(Exception):
-    """找不到信号发生器的串口。调用方应据此 SKIP 相关测试项，而不是判 FAIL。"""
+    """找不到信号发生器的串口。相关测试项据此判 FAIL（原因：没有信号发生器）。"""
 
 
 class SignalSourceError(Exception):

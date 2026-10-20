@@ -32,7 +32,6 @@ class StepStatus(Enum):
     WAITING_USER = "waiting_user"
     PASSED = "passed"
     FAILED = "failed"
-    SKIPPED = "skipped"
 
 
 @dataclass
@@ -153,7 +152,7 @@ class Pipeline:
         self.failures: list[tuple[str, str, str, str, str, str]] = []
         # 结构化结果（每个「模式 x 配置」一条），供**独立的测试工具**直接渲染界面。
         # 纯附加：产测引擎自己不读它，行为完全不变。有它就不必去解析 report_lines
-        # 里那些本地化文案（"M4 32ch@200M: PASS (32 ok / 0 fail / 0 skip)"）。
+        # 里那些本地化文案（"M4 32ch@200M: PASS (32 ok / 0 fail)"）。
         self.mode_results: list[dict] = []
 
     # ---- construction helpers -------------------------------------------
@@ -323,9 +322,8 @@ class Pipeline:
         self.cb.on_log(msg)
 
     def _note_mode_result(self, entry, *, config: str = "-", ok: bool = True,
-                          passed: int = 0, failed: int = 0, skipped: int = 0,
-                          verdicts=None, note: str = "",
-                          skip: bool = False) -> None:
+                          passed: int = 0, failed: int = 0,
+                          verdicts=None, note: str = "") -> None:
         """追加一条结构化结果到 `mode_results`（供独立测试工具渲染界面）。
 
         纯附加信息：产测引擎自己不读它，行为与判定完全不变。
@@ -335,10 +333,8 @@ class Pipeline:
             "mode_label": entry.label,
             "config": config,
             "ok": bool(ok),
-            "skip": bool(skip),
             "passed": passed,
             "failed": failed,
-            "skipped": skipped,
             "verdicts": list(verdicts or []),
             "note": note,
         })
@@ -601,7 +597,7 @@ class Pipeline:
         ss = self.profile.signal_source
         if ss.firmware is None:
             self._log(t("signal_source.firmware is not declared"))
-            self.report_lines.append("fixture: SKIP (" + t("no firmware declared") + ")")
+            self.report_lines.append("fixture: FAIL (" + t("no firmware declared") + ")")
             return False
 
         # 夹具没插就提示并等待，插上后自动继续。
@@ -612,7 +608,7 @@ class Pipeline:
         ok = fixture.flash(ss.firmware, ss.firmware_run, self._log,
                            cancel=self.cancel)
         if not ok:
-            self._log(t("Fixture flash FAILED; the capture steps will report SKIP"))
+            self._log(t("Fixture flash FAILED"))
             self.report_lines.append(
                 "fixture: FAIL (" + t("could not load the signal generator") + ")")
             return False
@@ -649,17 +645,17 @@ class Pipeline:
             before = len(self.report_lines)
             ok = self._run_mode(entry)
             all_ok = all_ok and ok
-            # Keep the per-mode PASS/FAIL/SKIP line, drop the per-config noise
+            # Keep the per-mode PASS/FAIL line, drop the per-config noise
             # that _run_mode_config already put in the log.
             if len(self.report_lines) == before:
                 self.report_lines.append(
                     "M%d %s: %s" % (entry.mode, entry.label,
                                     t("PASS") if ok else t("FAIL")))
         passing = sum(1 for ln in self.report_lines[summary_before:]
-                      if ": PASS" in ln or ": SKIP" in ln)
+                      if ": PASS" in ln)
         failing = sum(1 for ln in self.report_lines[summary_before:]
                       if ": FAIL" in ln)
-        self._log(t("== signal generator: {p} patterns pass/skip, {f} fail ==")
+        self._log(t("== signal generator: {p} patterns pass, {f} fail ==")
                   .format(p=passing, f=failing))
         return all_ok
 
@@ -672,22 +668,22 @@ class Pipeline:
             self._log(t("M{mode} is not ready: {note}").format(
                 mode=entry.mode, note=entry.note or "-"))
             self.report_lines.append(
-                "M%d %s: SKIP (%s)" % (entry.mode, entry.label,
+                "M%d %s: FAIL (%s)" % (entry.mode, entry.label,
                                        entry.note or t("not ready")))
-            self._note_mode_result(entry, note=entry.note or t("not ready"),
-                                   skip=True)
-            return True                       # SKIP is not a failure
+            self._note_mode_result(entry, ok=False, failed=1,
+                                   note=entry.note or t("not ready"))
+            return False                      # a planned mode that cannot run is a fail
 
         try:
             src = self._signal_source()
         except Exception as e:                      # noqa: BLE001
             self._log(t("Signal generator unavailable: {e}").format(e=e))
             self.report_lines.append(
-                "M%d %s: SKIP (%s)" % (entry.mode, entry.label,
+                "M%d %s: FAIL (%s)" % (entry.mode, entry.label,
                                        t("no signal generator")))
-            self._note_mode_result(entry, note=t("no signal generator"),
-                                   skip=True)
-            return True                       # absence must not read as a DUT failure
+            self._note_mode_result(entry, ok=False, failed=1,
+                                   note=t("no signal generator"))
+            return False
 
         try:
             src.select_mode(entry.mode)
@@ -729,8 +725,8 @@ class Pipeline:
         # samples (14 MB), which the 5 Gbps link cannot drain at the requested rate
         # and which buys nothing -- 8 M samples is still 5.7 ms, enough for the
         # slowest signal M0 carries. The EFFECTIVE window is what the model needs,
-        # because a channel slower than it must be reported as SKIP rather than
-        # failed for having no complete period in the capture.
+        # because a channel slower than it is marked unmeasurable (a fail that
+        # points at the profile, not the board).
         n_samples = min(int(cfg.samplerate_hz * cfg.window_ms / 1000.0),
                         cfg.max_samples)
         n_samples = max(n_samples, 1024)
@@ -781,14 +777,14 @@ class Pipeline:
                     # 就用哪一轮。**
                     #
                     #   默认轮（1.5 V）永远有资格；
-                    #   阈值组轮只在该判定的通道落在该组里时才有资格覆盖。
+                    #   阈值组轮只在该判定的通道落在该组里时才有资格接管。
                     #
-                    # M4 的 I2C 在 CH24/CH25（bank 3，1.8 V）-> 0.9 V 那轮覆盖它，
+                    # M4 的 I2C 在 CH24/CH25（bank 3，1.8 V）-> 0.9 V 那轮接管它，
                     # 正确：1.5 V 下 bank 3 是勉强电平，实测 spi5 的 MISO 解成
                     # 0x0F68（应为 0x0F69）、I2C 直接是垃圾。
                     #
                     # M5 的窄脉冲判定在 CH2~CH4（3.3 V 那侧）-> 0.9 V 那轮**不许**
-                    # 覆盖它，否则会把一个本该在 1.5 V 下判的检查改用坏阈值来判。
+                    # 接管它，否则会把一个本该在 1.5 V 下判的检查改用坏阈值来判。
                     # 以前是"最后一轮永远赢"，M0 在 0.9 V 下的轮转判定就是这么被
                     # 弄坏的（1.5 V 通过、0.9 V 失败）。
                     if group is None or (set(v.channels) & set(group.channels)):
@@ -802,12 +798,12 @@ class Pipeline:
 
         final = ([v for _c, v in sorted(verdicts_by_channel.items())]
                  + list(extra.values()))
-        good, passed, failed, skipped = checks.summarise(final)
+        good, passed, failed = checks.summarise(final)
         self._note_mode_result(entry, config=label, ok=good, passed=passed,
-                               failed=failed, skipped=skipped, verdicts=final)
+                               failed=failed, verdicts=final)
         by_ch = {v.channel: v for v in final}
         for v in final:
-            if v.ok is False:
+            if not v.ok:
                 where = (v.channel_text if v.channel < 0
                          else "CH%d" % v.channel)
                 self._log("     %-12s %-8s got %-24s want %-24s %s"
@@ -824,12 +820,12 @@ class Pipeline:
                 self.failures.append((
                     "M%d %s" % (entry.mode, entry.label), where, v.kind,
                     v.measured, v.expected, ok_in))
-        self._log(t("   {label}: {verdict}  ({p} ok / {f} fail / {s} skip)").format(
+        self._log(t("   {label}: {verdict}  ({p} ok / {f} fail)").format(
             label=label, verdict="PASS" if good else "FAIL",
-            p=passed, f=failed, s=skipped))
+            p=passed, f=failed))
         self.report_lines.append(
-            "M%d %s: %s (%d ok / %d fail / %d skip)"
-            % (entry.mode, label, "PASS" if good else "FAIL", passed, failed, skipped))
+            "M%d %s: %s (%d ok / %d fail)"
+            % (entry.mode, label, "PASS" if good else "FAIL", passed, failed))
         return good
 
     def _capture_retrying(self, cfg, vth, n_samples, out_file, label,

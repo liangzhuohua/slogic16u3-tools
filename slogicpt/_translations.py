@@ -15,7 +15,6 @@ ZH: dict[str, str] = {
     "Waiting": "等待操作",
     "Pass": "通过",
     "Fail": "失败",
-    "Skip": "跳过",
     # step row / logs
     "Single step: {label}": "单步执行：{label}",
     # startup
@@ -134,11 +133,11 @@ ZH: dict[str, str] = {
     "no serial port after flashing": "烧录后没有串口",
     "Signal generator on {p}, alive, mode 0": "信号发生器在 {p}，存活，模式 0",
     "Loading fixture: {name} (run {run})": "烧录夹具: {name} (run {run})",
-    "Fixture flash FAILED; the capture steps will report SKIP":
-        "夹具烧录失败；后续采样步骤将报 SKIP",
+    "Fixture flash FAILED":
+        "夹具烧录失败",
     "no firmware declared": "未声明固件",
-    "== signal generator: {p} patterns pass/skip, {f} fail ==":
-        "== 信号发生器: {p} 个模式通过/跳过，{f} 个失败 ==",
+    "== signal generator: {p} patterns pass, {f} fail ==":
+        "== 信号发生器: {p} 个模式通过，{f} 个失败 ==",
     "Capture attempt {a}/{n} failed ({e}); retrying":
         "采样第 {a}/{n} 次失败（{e}），重试中",
     "Capture failed: {e}": "采样失败: {e}",
@@ -257,8 +256,8 @@ ZH: dict[str, str] = {
         '== M{mode} {label} ==',
     '-- {label} ({ms} ms window, {n} samples) --':
         '-- {label}（窗口 {ms} ms，{n} 个采样点）--',
-    '   {label}: {verdict}  ({p} ok / {f} fail / {s} skip)':
-        '   {label}: {verdict}  （{p} 通过 / {f} 失败 / {s} 覆盖）',
+    '   {label}: {verdict}  ({p} ok / {f} fail)':
+        '   {label}: {verdict}  （{p} 通过 / {f} 失败）',
     'could not load the signal generator':
         '信号发生器烧录失败',
     'Signal generator not reachable after flashing: {e}':

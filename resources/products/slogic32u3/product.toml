@@ -121,7 +121,7 @@ mode    = 0
 label   = "wiring / mapping"
 ready   = true
 checks  = ["order"]
-note    = "every channel is SKIP on its own; the rotation check carries the verdict, because WHICH channel is high during which step is what identifies a wire"
+note    = "no per-channel verdict; the rotation check carries the verdict, because WHICH channel is high during which step is what identifies a wire"
 configs = [
   { channels = 32, samplerate = "200M", window_ms = 10, max_samples = 8000000, link = "10G" },
   { channels = 32, samplerate = "100M", window_ms = 10, max_samples = 8000000, link = "5G" }

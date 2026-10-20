@@ -14,7 +14,6 @@ STATUS_TEXT = {
     StepStatus.WAITING_USER: "Waiting",
     StepStatus.PASSED: "Pass",
     StepStatus.FAILED: "Fail",
-    StepStatus.SKIPPED: "Skip",
 }
 
 
