@@ -399,7 +399,10 @@ def check_burst_fill(samples: np.ndarray, sample_rate_hz: float,
             bad.append("high %.3f ms in a burst (want 0.500)" % high_ms)
         if tr.size > 4:
             bad.append("%d transitions in a burst (at most 4)" % tr.size)
-        runs = np.diff(tr) if tr.size > 1 else np.array([], dtype=int)
+        # the runs between transitions; the first and the last may be cut short
+        # by the burst edges (the 1 kHz phase is free against the burst), so
+        # only the ones in between must be long
+        runs = np.diff(tr)[1:-1] if tr.size > 3 else np.array([], dtype=int)
         short = runs[runs < int(100e-6 * fs)]
         if short.size:
             bad.append("%d run(s) of %.0f ns inside a burst"
@@ -530,6 +533,14 @@ def _selftest() -> int:
     fill = (t1k & burst).astype(np.uint8)
     comp, every = burst_windows(ch0, fs9)
     cases = {"clean": (fill, True)}
+    # adjacent-channel anti-phase, and a burst that starts 84 us before the
+    # 1 kHz edge: the first and last runs are short and legitimate
+    inv = ((1 - t1k) & burst).astype(np.uint8)
+    cases["inverted fill"] = (inv, True)
+    late = ((((t6 + int(0.0005 * fs9) - int(0.000084 * fs9)) // int(0.0005 * fs9)) % 2)
+            .astype(np.uint8))
+    cases["84 us run at the burst edge"] = ((late & burst).astype(np.uint8), True)
+    cases["84 us run, inverted"] = (((1 - late) & burst).astype(np.uint8), True)
     g = fill.copy()
     rise = int(np.flatnonzero(np.diff(g.astype(np.int8)) == 1)[0]) + 1
     g[rise + int(0.0001 * fs9)] = 0          # one sample, 100 us into a high run
