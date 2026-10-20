@@ -670,6 +670,18 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
         verdicts.extend(_narrow_pulse_verdicts(channels, sample_rate_hz))
     elif mode == 6:
         verdicts.extend(_burst_verdicts(channels, sample_rate_hz))
+        # CH4 and up are judged one by one by the fill check, replacing their
+        # "covered" placeholder -- per channel, so a threshold-group pass takes
+        # over exactly its own channels
+        complete, every = deep_checks.burst_windows(channels[0], sample_rate_hz)
+        for c in range(4, min(len(verdicts), channels.shape[0])):
+            if verdicts[c].channel != c:
+                continue
+            r = deep_checks.check_burst_fill(channels[c], sample_rate_hz,
+                                             complete, every)
+            verdicts[c] = Verdict(c, r.ok, "burst-fill", r.measured,
+                                  "1 kHz for 0.5 ms of each 1 ms burst, low between",
+                                  r.detail, reason="" if r.ok else "burst_fill")
 
     # 只标注、不改判：某条逐通道失败如果换成"滤掉窄毛刺"的读法本可通过，那它
     # **可能**是探头振铃/接地不良（测量问题）而不是板子的问题。判定层不替人下

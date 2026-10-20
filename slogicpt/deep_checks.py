@@ -333,6 +333,90 @@ def check_burst(samples: np.ndarray, sample_rate_hz: float) -> BurstResult:
     return r
 
 
+def burst_windows(ch0: np.ndarray, sample_rate_hz: float
+                  ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """(complete, all) burst windows in samples, found from CH0's pulses.
+
+    CH0 pulses every 10 us while a burst is on and is silent for 19 ms between
+    bursts, so its rising edges fall into clusters, one per burst.  The burst
+    itself starts up to 10 us before the first pulse of a cluster and ends up
+    to 10 us after the last, hence the 15 us margin each side.  A cluster
+    within 1.1 ms of either end of the capture may be cut off; it is returned
+    in `all` (so the silence check leaves it alone) but not in `complete`."""
+    rises = np.flatnonzero((ch0[1:] == 1) & (ch0[:-1] == 0)) + 1
+    if rises.size == 0:
+        return [], []
+    gap = int(100e-6 * sample_rate_hz)
+    margin = int(15e-6 * sample_rate_hz)
+    edge = int(1.1e-3 * sample_rate_hz)
+    groups = np.split(rises, np.flatnonzero(np.diff(rises) > gap) + 1)
+    every, complete = [], []
+    for g in groups:
+        a, b = max(0, int(g[0]) - margin), min(ch0.size, int(g[-1]) + margin)
+        every.append((a, b))
+        if g[0] > edge and g[-1] < ch0.size - edge:
+            complete.append((a, b))
+    return complete, every
+
+
+@dataclass
+class FillResult:
+    ok: bool
+    measured: str
+    detail: str
+
+
+def check_burst_fill(samples: np.ndarray, sample_rate_hz: float,
+                     complete: list[tuple[int, int]],
+                     every: list[tuple[int, int]]) -> FillResult:
+    """M6 fill channel (CH4 and up): 1 kHz while a burst is on, low otherwise.
+
+    The fill is the free-running 1 kHz reference gated by the 1 ms burst, so
+    inside a burst a channel is high for exactly half of it (0.5 ms) in at
+    most two pieces, and it is low everywhere else.  Per complete burst:
+
+      * high time 0.5 ms +-5 %;
+      * at most 4 transitions -- one high run, or two when the burst starts
+        and ends inside a high half-period;
+      * every run except the first and the last (which the burst edges may cut
+        short) is >= 100 us, so a nanosecond glitch inside the burst fails;
+
+    and outside every burst the channel never goes high.  A floating input,
+    a wire on the wrong pin or the edge glitches seen on the 1.8 V bank all
+    fail one of these."""
+    fs = sample_rate_hz
+    if not complete:
+        return FillResult(False, "no complete burst",
+                          "no whole burst in the window; CH0 shows no 1 ms burst")
+    bad, highs, counts = [], [], []
+    for a, b in complete:
+        seg = samples[a:b]
+        tr = np.flatnonzero(seg[1:] != seg[:-1]) + 1
+        high_ms = float(np.count_nonzero(seg)) / fs * 1e3
+        highs.append(high_ms)
+        counts.append(int(tr.size))
+        if abs(high_ms - 0.5) > 0.025:
+            bad.append("high %.3f ms in a burst (want 0.500)" % high_ms)
+        if tr.size > 4:
+            bad.append("%d transitions in a burst (at most 4)" % tr.size)
+        runs = np.diff(tr) if tr.size > 1 else np.array([], dtype=int)
+        short = runs[runs < int(100e-6 * fs)]
+        if short.size:
+            bad.append("%d run(s) of %.0f ns inside a burst"
+                       % (short.size, float(short.min()) / fs * 1e9))
+    edge = int(1.1e-3 * fs)
+    outside = np.ones(samples.size, dtype=bool)
+    outside[:edge] = outside[-edge:] = False
+    for a, b in every:
+        outside[a:b] = False
+    stray = int(np.count_nonzero(samples[outside]))
+    if stray:
+        bad.append("high for %.0f ns outside the bursts" % (stray / fs * 1e9))
+    measured = "high %s ms, %s edges per burst" % (
+        "/".join("%.3f" % h for h in highs), "/".join(map(str, counts)))
+    return FillResult(not bad, measured, "; ".join(dict.fromkeys(bad)))
+
+
 # ---------------------------------------------------------------------------
 # self-test
 # ---------------------------------------------------------------------------
@@ -430,6 +514,37 @@ def _selftest() -> int:
              (br.period or 0) / fs9 * 1e3, gap / fs9 * 1e3))
     if not br.ok or abs((br.period or 0) - gap) > gap * 0.02:
         print("  FAIL"); fails += 1
+
+    print("== M6 fill (CH4..): 1 kHz gated by the burst ==")
+    # 40 ms, bursts at 1.5 ms and 21.5 ms (both complete); the fill is the free
+    # 1 kHz square (phase 0.3 ms) gated by each 1 ms burst
+    n6 = int(0.040 * fs9)
+    t6 = np.arange(n6)
+    burst = ((t6 - int(0.0015 * fs9)) % period) < active
+    ch0 = np.zeros(n6, dtype=np.uint8)
+    for b0 in (int(0.0015 * fs9), int(0.0215 * fs9)):
+        for k in range(100):
+            q = b0 + int(2e-6 * fs9) + k * int(10e-6 * fs9)
+            ch0[q:q + 8] = 1
+    t1k = (((t6 + int(0.0003 * fs9)) // int(0.0005 * fs9)) % 2).astype(np.uint8)
+    fill = (t1k & burst).astype(np.uint8)
+    comp, every = burst_windows(ch0, fs9)
+    cases = {"clean": (fill, True)}
+    g = fill.copy()
+    rise = int(np.flatnonzero(np.diff(g.astype(np.int8)) == 1)[0]) + 1
+    g[rise + int(0.0001 * fs9)] = 0          # one sample, 100 us into a high run
+    cases["5 ns dip inside a burst"] = (g, False)
+    o = fill.copy(); o[int(0.010 * fs9):int(0.010 * fs9) + 3] = 1
+    cases["stray pulse between bursts"] = (o, False)
+    cases["stuck low"] = (np.zeros(n6, dtype=np.uint8), False)
+    cases["stuck high"] = (np.ones(n6, dtype=np.uint8), False)
+    for name, (sig, want) in cases.items():
+        r = check_burst_fill(sig, fs9, comp, every)
+        print("  %-28s %s  %s" % (name, "ok " if r.ok else "bad", r.measured))
+        if r.ok is not want:
+            print("  FAIL: expected %s" % ("pass" if want else "fail")); fails += 1
+    if len(comp) != 2:
+        print("  FAIL: expected 2 complete bursts, found %d" % len(comp)); fails += 1
 
     print()
     print("RESULT: %s" % ("OK" if not fails else "%d FAILURES" % fails))

@@ -186,7 +186,7 @@ def _burst(ch: int, fs: float) -> Expect:
     # 50 Hz，证明这里原来那行注释和 freq_hz 都是过时的。
     return Expect(Kind.SKIP, freq_hz=50.0,
                   note="1 kHz during the 1 ms burst, silent for 19 ms -> 50 Hz mean",
-                  covered_by="突发结构检查")
+                  covered_by="突发填充检查")
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +323,7 @@ MODE_LABELS = {
 # 0.9 V, because the lower threshold makes the 3.3 V edges ring hard enough to
 # disturb the ordering. Running the second pass anyway doubled the capture count
 # and, worse, let the worse of the two verdicts be the one reported.
-NEEDS_THRESHOLD_GROUPS = {4, 5}
+NEEDS_THRESHOLD_GROUPS = {4, 5, 6}
 # M5 也必须在册：它的 CH20..CH25 同样是 bank 3。实测 1.5 V 下那几路的 1 kHz 方波
 # 每个边沿会多跨几次阈值（CH20/22/23 数出 8 个上升沿而不是 4 个，读成 2.33 kHz），
 # 换成 0.9 V 就正好是 1 kHz。最初只放了 M4，是因为 M4 的 bank 3 信号（409 kHz /
@@ -333,6 +333,10 @@ NEEDS_THRESHOLD_GROUPS = {4, 5}
 # 结构化判定的合并规则已同步修正（见 pipeline._run_mode_config）：阈值组轮只覆盖
 # "通道落在该组里"的结构化判定，所以 M5 的窄脉冲检查（CH2~CH4，3.3 V 那侧）仍然
 # 用 1.5 V 那轮判，不会被 0.9 V 这轮污染。
+#
+# M6 同理（2026-10-20 起）：CH4.. 的突发填充改为逐通道判定后，CH20..CH25 也要
+# 取 0.9 V 那轮；以前它们全归"突发结构检查"、而那条检查只看 CH0..CH3，
+# 所以 1.5 V 下 bank 3 的毛刺从未被判过。
 
 
 def expected(mode: int, nch: int, samplerate_hz: float,
@@ -444,6 +448,9 @@ def _selftest() -> int:
     print("== M6 burst: envelope owned by the burst check ==")
     e = expected(6, 32, 200e6)
     check(all(x.kind is Kind.SKIP for x in e), "every channel handed to 'burst'")
+    check(all(x.covered_by == "突发填充检查" for x in e[4:]),
+          "CH4.. judged one by one by the fill check")
+    check(6 in NEEDS_THRESHOLD_GROUPS, "M6 also captured at the bank-3 threshold")
     check(all(near(x.freq_hz, 50.0) for x in e[4:]),
           "CH4..CH31 1 kHz only inside the 1 ms burst every 20 ms -> 50 Hz mean")
 
