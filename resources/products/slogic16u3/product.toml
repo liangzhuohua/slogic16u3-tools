@@ -29,8 +29,7 @@ pid              = 0x6010
 baud             = 115200
 settle_ms        = 400      # 切模式后的稳定延时
 reply_timeout_ms = 1000     # 等 "MODE n" 回复的超时
-# 与 32U3 共用同一份位流：只放一份，换位流时不会两边不一致
-firmware         = "../slogic32u3/firmware/testgen.fs"
+firmware         = "../../fixture/testgen.fs"   # 夹具位流，各产品共用（入库）
 firmware_run     = 2        # 2 = SRAM Program
 
 [capture]

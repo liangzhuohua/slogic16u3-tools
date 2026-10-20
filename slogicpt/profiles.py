@@ -1,12 +1,8 @@
 """Product profile loading / validation / resource self-check.
 
-All product differences (VID/PID, channels, bandwidth, expected signal,
-firmware paths, timeouts) live in resources/products/<id>/.  Each product is
-a directory:
-
-    resources/products/<id>/
-        product.toml      # profile (public)
-        firmware/          # testgen.fs (factory, gitignored)
+All product differences (VID/PID, channels, bandwidth, test plan, timeouts)
+live in resources/products/<id>/product.toml.  The fixture bitstream they test
+with, resources/fixture/testgen.fs, is shared by every product.
 
 Adding a new product requires only a new directory + resources -- no code
 changes.

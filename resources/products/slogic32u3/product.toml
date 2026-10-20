@@ -49,7 +49,7 @@ pid              = 0x6010
 baud             = 115200
 settle_ms        = 400      # 切模式后的稳定延时
 reply_timeout_ms = 1000     # 等 "MODE n" 回复的超时
-firmware         = "firmware/testgen.fs"
+firmware         = "../../fixture/testgen.fs"   # 夹具位流，各产品共用（入库）
 firmware_run     = 2        # 2 = SRAM Program（4 = 带校验）
 
 # 接线置换：channel_order[g] = 发生器 CH g 实际到达的分析仪输入。

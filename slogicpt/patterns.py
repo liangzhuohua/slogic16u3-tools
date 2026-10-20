@@ -185,7 +185,8 @@ def _burst(ch: int, fs: float) -> Expect:
     # 19 ms 而不是 99 ms，均值是 50 Hz 而不是 10 Hz —— 实测 M6 的 CH4 读到的正是
     # 50 Hz，证明这里原来那行注释和 freq_hz 都是过时的。
     return Expect(Kind.STRUCTURED, freq_hz=50.0,
-                  note="1 kHz during the 1 ms burst, silent for 19 ms -> 50 Hz mean",
+                  note="1 kHz during the 1 ms burst (adjacent channels in "
+                       "anti-phase), silent for 19 ms -> 50 Hz mean",
                   judged_by="突发填充检查")
 
 

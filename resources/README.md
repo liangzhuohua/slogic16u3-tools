@@ -7,9 +7,9 @@
 ```
 resources/
 ├── products/<product_id>/        # 一产品一目录，目录名 = product_id
-│   ├── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 期望信号 / 模式切换），公开入库
-│   └── firmware/                 # 固件资源（工厂本地，禁止入库/公开）
-│       └── testgen.fs            #   信号源夹具（Tang Nano 9K）位流，放在 slogic32u3/ 下；16U3 档案直接引用这一份
+│   └── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 测试计划），公开入库
+├── fixture/
+│   └── testgen.fs                # 信号源夹具（Tang Nano 9K）位流，各产品共用，入库
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
@@ -24,10 +24,10 @@ resources/
 ```bash
 # sigrok-cli（来自 SLogic 发布包，须 2.3.0 及以上：旧版 4ch@1400M 会回卷、8ch@800M 收不到数据）
 ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigrok-cli-linux-x86_64
-
-# 信号源夹具位流（32U3 / 16U3 共用这一份）
-cp testgen.fs           resources/products/slogic32u3/firmware/testgen.fs
 ```
+
+夹具位流 `fixture/testgen.fs` 随仓库分发，不用另外放置。更新夹具 RTL 后，把新构建的
+`impl/pnr/testgen.fs` 覆盖到这里并提交即可，32U3 / 16U3 档案都引用这一份。
 
 ## product.toml：产品档案
 
@@ -37,9 +37,9 @@ cp testgen.fs           resources/products/slogic32u3/firmware/testgen.fs
 [usb]
 links = ["10G", "5G"]      # 产测逐轮链路：先 10G 全测，提示换插 5G 口后再全测；第一轮是门槛
 
-[signal_source]            # 信号源夹具（Tang Nano 9K）；16U3 无此段，走外置固定信号源
+[signal_source]            # 信号源夹具（Tang Nano 9K），32U3 / 16U3 相同
 type     = "fpga"
-firmware = "firmware/testgen.fs"
+firmware = "../../fixture/testgen.fs"   # 相对本产品目录
 firmware_run = 2           # SRAM 载入（每轮重载，约 1.5 s）
 
 [[capture.threshold_groups]]   # 1.8 V 的 bank 3 通道另用 0.9 V 阈值再采一次
@@ -63,7 +63,7 @@ configs = [                # 每轮链路一组配置（5G 下驱动限速：32U
 本仓库是公开仓库，以下内容**仅限工厂产测工位本地放置，禁止提交入库或以任何形式公开**
 （.gitignore 已强制忽略）：
 
-- `products/<id>/firmware/*.fs`、`*.bin` — 夹具位流等资源
+- `products/<id>/firmware/*.fs`、`*.bin` — 产品固件、DFU 位流等（夹具位流 `fixture/testgen.fs` 不在此列，入库）
 - `products/<id>/firmware/*.ekey`、`efuse_key.txt` — eFuse AES 密钥（机密；本工具已不用，
   .gitignore 仍保留规则以防误提交）
 
@@ -138,7 +138,6 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
 | sigrok-cli | `bin/sigrok-cli-windows-x86_64.exe`（SLogic 2.3.0 及以上） |
 | openFPGALoader | `bin/openFPGALoader/openFPGALoader.exe` + 夹具 FTDI A 通道 WinUSB（「环境准备」一键部署） |
 | libusb 后端 | `bin/libusb-1.0.dll`（推荐内置入库；`build.py` 自动打包进 exe）+ 设备 WinUSB 驱动（Zadig） |
-| 固件资源 | `products/<id>/firmware/testgen.fs`（32U3 夹具位流） |
 
 ## 打包分发
 

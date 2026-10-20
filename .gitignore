@@ -16,6 +16,7 @@ resources/bin/*
 # 固件与工厂产测专用资源：只在工位本地放置，禁止入库/公开
 # 每产品目录 resources/products/<id>/：product.toml 公开入库，
 # firmware/ 下的镜像/密钥为工厂本地，禁止入库/公开。
+# （夹具位流 resources/fixture/testgen.fs 不在此列，入库随仓库分发。）
 resources/products/*/firmware/*.bin
 resources/products/*/firmware/*.fs
 # eFuse AES 密钥（机密，绝不入库）
