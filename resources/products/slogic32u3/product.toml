@@ -102,33 +102,7 @@ voltage_threshold_v = 0.9
 freq_tol_pct = 5.0
 duty_tol_pp  = 5.0
 
-[firmware]
-app = "firmware/app.bin"
-app_flash_addr = 0x0
-verify = true
-
-[ota]
-# write_chunk：单次页编程(PP)事务的数据字节数。代码默认 12（保守），上限 256
-#（program() 按 256 页边界分块，故不会跨界）。
-#
-# 2026-10 排查：原值 200 曾多次把 DUT 的 USB-SPI 桥接器跑进挂死状态（表现为下一次
-# 烧写一开始就报 [Errno 32] Pipe error / [Errno 5]，只有断电重启或 RECONFIG 才能
-# 恢复）。桥接器单事务缓冲有限，明显小于 200；参考读回路径 read_chunk=64（桥每次
-# CMD_READ_DATA 只回一个 ≤64B 批量包），写入也取 64 —— 比 12 快得多，又留足余量。
-# 若确认稳定，可逐级上调（64 → 96 → 128）找可靠上限；每次上调后连跑几遍完整烧写。
-write_chunk = 48             # 本机实测：48 稳定可用（32U3）；64 未经实测验证
-read_chunk = 64
-usb_timeout_ms = 1000
-wip_timeout_s = 5.0
-reset_settle_s = 2.0
-
-[mode_switch]
-usb_reconfig = true
-
 [timeouts]
-wait_dfu_device_s = 30
-wait_app_device_s = 30
-dfu_flash_s = 600
 capture_s = 120
 
 # ===========================================================================

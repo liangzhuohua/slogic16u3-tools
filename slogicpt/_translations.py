@@ -76,7 +76,7 @@ ZH: dict[str, str] = {
     "Rule exists; rewrite to update": "规则已存在，可重新写入以更新",
     "Remove the deployed rule": "移除已部署的规则",
     "Not deployed; nothing to remove": "尚未部署，无需移除",
-    # mode switch / reflash / sampling
+    # language switch / sampling
     "Cannot switch": "无法切换",
     "Parameter error": "参数错误",
     "Custom capture: {ch}ch@{rate}": "自定义采样: {ch}ch@{rate}",
@@ -87,7 +87,6 @@ ZH: dict[str, str] = {
     "Cannot switch language while a test is running.": "测试运行中无法切换语言。",
     # slots
     "Current step: {label}": "当前步骤: {label}",
-    "Manual mode switch required": "需要手动切换模式",
     # report
     "SLogic Production Test Report": "SLogic 产测报告",
     "Time: {ts}": "时间: {ts}",
@@ -102,11 +101,6 @@ ZH: dict[str, str] = {
         "如需反馈问题，请复制本报告并附上运行日志相关片段。",
 
     # ---- pipeline.py -----------------------------------------------------
-    "Wait for DFU device": "等待 DFU 设备",
-    "DFU flash app firmware": "DFU 烧写应用固件",
-    "Switch to APP mode": "切换到 APP 模式",
-    "Wait for APP device": "等待 APP 设备",
-    "Switch to DFU mode": "切换到 DFU 模式",
     "Capture {ch}ch@{rate}": "采样验证 {ch}ch@{rate}",
     "Custom capture {ch}ch@{rate}": "自定义采样 {ch}ch@{rate}",
     "Unknown step: {step_id}": "未知步骤: {step_id}",
@@ -115,26 +109,6 @@ ZH: dict[str, str] = {
     "Flow aborted: {e}": "流程中止: {e}",
     "Flow exception:": "流程异常:",
     "Flow exception, see log for details": "流程异常，详见日志",
-    "Waiting for {what} device ({vid}:{pid})...": "等待 {what} 设备 ({vid}:{pid})...",
-    "{what} device ready": "{what} 设备已就绪",
-    " (after manual intervention)": "（人工介入后）",
-    "Waiting for {what} device timed out -- please replug":
-        "等待 {what} 设备超时，请重新插拔/上电设备…",
-    "APP SerialNumber: {sn} (for version identification/distinction)":
-        "APP SerialNumber: {sn}（用于版本识别/区分）",
-    "APP device provided no SerialNumber descriptor": "APP 设备未提供 SerialNumber 描述符",
-    "dfu_pid not configured, cannot switch to APP": "dfu_pid 未配置，无法切换到 APP",
-    "No APP device detected, skipping auto-switch, waiting for DFU directly":
-        "未检测到 APP 设备，跳过自动切换，直接等待 DFU",
-    "Sending RECONFIG to switch to {mode} mode ({vid}:{pid})...":
-        "发送 RECONFIG 切换到 {mode} 模式 （{vid}:{pid}）...",
-    "RECONFIG switch failed: {e}, trying fallback...": "RECONFIG 切换失败: {e}，尝试保底方案…",
-    "Please press the onboard MODE button to switch {name} to {mode} mode; it "
-    "will continue automatically once the target-mode device is detected":
-        "请按板载 MODE 按键，将 {name} 切换到 {mode} 模式；检测到目标模式设备后自动继续",
-    "dfu_pid not configured": "dfu_pid 未配置",
-    "Firmware or dfu_pid not configured, cannot flash": "固件或 dfu_pid 未配置，无法烧写",
-    "DFU flash": "DFU 烧写",
     "== Capture {label} ({samples} samples) ==": "== 采样 {label} ({samples} samples) ==",
     "Multiple SLogic devices detected online at once; the current sigrok driver "
     "does not yet support selecting a device, please keep only the device under "
@@ -190,8 +164,6 @@ ZH: dict[str, str] = {
         "schema_version 应为 {expected}, 实际 {actual!r}",
     "product.id ({pid}) does not match directory name ({dirname})":
         "product.id ({pid}) 与目录名 ({dirname}) 不一致",
-    "usb.dfu_pid not configured; DFU and one-click flow will be disabled":
-        "usb.dfu_pid 未配置，DFU 与一键流程将禁用",
     "channel_options {opts} exceed num_channels={n}":
         "channel_options {opts} 超出 num_channels={n}",
     "default_channels={dc} not in channel_options": "default_channels={dc} 不在 channel_options 中",
@@ -217,12 +189,8 @@ ZH: dict[str, str] = {
     "sigrok-cli binary not found; place it in {d} with the platform-specific name "
     "(see resources/README.md); capture disabled":
         "未找到 sigrok-cli 二进制，请按平台命名放入 {d}（见 resources/README.md），采样功能禁用",
-    "firmware.app not configured; DFU and one-click flow disabled":
-        "firmware.app 未配置，DFU 与一键流程禁用",
-    "application firmware missing: {path}; DFU and one-click flow disabled":
-        "应用固件缺失: {path}，DFU 与一键流程禁用",
 
-    # ---- sigrok.py / flasher.py / mode_switch.py -------------------------
+    # ---- sigrok.py --------------------------------------------------------
     "Capture cancelled": "采样已取消",
     "Capture timed out ({s:.0f}s)": "采样超时 ({s:.0f}s)",
     "Device does not support samplerate {rate} (driver wrapped to {wrapped}). "
@@ -231,40 +199,6 @@ ZH: dict[str, str] = {
     "sigrok-cli exit code {code}": "sigrok-cli 退出码 {code}",
     "No capture data file produced: {path}": "未产生采样数据文件: {path}",
     "Capture data is less than one full sample": "采样数据不足一个样本",
-    "Firmware file not found: {path}": "固件文件不存在: {path}",
-    "Firmware: {path} ({size} bytes) -> {vid:#06x}:{pid:#06x} @ {addr:#x}":
-        "固件: {path} ({size} bytes) -> {vid:#06x}:{pid:#06x} @ {addr:#x}",
-    "USB transfer failed ({err}), resetting device and retrying once…":
-        "USB 传输失败（{err}），复位设备后重试一次…",
-    "DFU flash failed: {err}": "DFU 烧写失败: {err}",
-    "Device not found after reset": "复位后未找到设备",
-    "Device {vid:#06x}:{pid:#06x} not found, cannot send RECONFIG":
-        "未找到设备 {vid:#06x}:{pid:#06x}，无法发送 RECONFIG",
-    "RECONFIG sent to {vid:#06x}:{pid:#06x}": "RECONFIG 已发送至 {vid:#06x}:{pid:#06x}",
-    "RECONFIG triggered (device offline, control transfer returned {err}, expected)":
-        "RECONFIG 已触发（设备离线，控制传输返回 {err}，属预期）",
-    # flasher.py: RECONFIG-based recovery from a hung DFU device
-    "Still no response after reset ({err}); rebooting the device (RECONFIG) "
-    "and retrying…":
-        "复位后仍无响应（{err}）；用 RECONFIG 重启设备后再试一次…",
-    "DFU flash failed: device unresponsive ({err}); power-cycle the device "
-    "(unplug and replug its USB) and retry":
-        "DFU 烧写失败: 设备无响应（{err}）；请给设备断电重启"
-        "（拔掉 USB 再插回）后重试",
-    "RECONFIG to {vid:#06x}:{pid:#06x} reported: {err}":
-        "向 {vid:#06x}:{pid:#06x} 发送 RECONFIG 返回: {err}",
-    "Rebooting the device with RECONFIG ({vid:#06x}:{pid:#06x})…":
-        "正在用 RECONFIG 重启设备（{vid:#06x}:{pid:#06x}）…",
-    "Device did not re-enumerate after RECONFIG":
-        "RECONFIG 后设备没有重新枚举",
-    "Device rebooted straight back into DFU mode":
-        "设备重启后直接回到了 DFU 模式",
-    "Device rebooted into APP mode; sending RECONFIG once more to return to DFU":
-        "设备重启后落到了 APP 模式；再发一次 RECONFIG 切回 DFU",
-    "Device is back in DFU mode after the RECONFIG reboot":
-        "RECONFIG 重启后设备已回到 DFU 模式",
-    "Device did not return to DFU mode after RECONFIG":
-        "RECONFIG 后设备没有回到 DFU 模式",
 
     # ---- env_setup.py (title/hint only; deploy log stays English) --------
     "Linux device permissions (udev)": "Linux 设备权限 (udev)",
@@ -274,32 +208,11 @@ ZH: dict[str, str] = {
     "the device to take effect.":
         "为 SLogic(359F) 与 FTDI 线缆(0403:6010) 安装 udev 规则，免 root 访问；"
         "部署会弹出授权框，之后重新插拔设备生效。",
-    "Bind the FTDI A-channel (0403:6010 interface 0) to WinUSB, required by "
-    "openFPGALoader's high-speed flashing; deploying pops up a UAC authorization dialog.":
-        "将 FTDI A 通道(0403:6010 接口0)绑定到 WinUSB，openFPGALoader 高速烧录所需；"
+    "Bind the fixture's FTDI A-channel (0403:6010 interface 0) to WinUSB, which "
+    "openFPGALoader needs to load the fixture; deploying pops up a UAC "
+    "authorization dialog.":
+        "将夹具 FTDI A 通道(0403:6010 接口0)绑定到 WinUSB，openFPGALoader 载入夹具所需；"
         "部署会弹出 UAC 授权框。",
-
-    # ---- dfu/ (exceptions surfaced via flasher) --------------------------
-    "Flash communication error: SR1 stuck reading 0xFF (bus hung)":
-        "Flash 通信异常：SR1 恒读 0xFF（总线挂起）",
-    "Flash write wait timed out: WIP did not clear in time":
-        "Flash 写等待超时：WIP 未在预期内清零",
-    "Start address 0x{addr:06X} is not 64KB-aligned": "起始地址 0x{addr:06X} 未按 64KB 对齐",
-    "Firmware is empty": "固件为空",
-    "SPI flash reset failed": "SPI flash reset 失败",
-    "Flash not responding (ID={dev_id}); check the DFU connection and retry":
-        "Flash 无响应（ID={dev_id}），请检查 DFU 连接后重试",
-    "Post-erase verify failed: region is not all 0xFF": "擦除后校验失败：区域非全 0xFF",
-    "Flash verify failed: first difference at 0x{pos:06X}": "烧写校验失败：首个差异在 0x{pos:06X}",
-    "No libusb backend found (libusb-1.0.dll): put it in resources/bin/ or "
-    "install system libusb-1.0":
-        "未找到 libusb 后端（libusb-1.0.dll）：请放入 resources/bin/ 或安装系统 libusb-1.0",
-    "Device not found; check the VID/PID or connection state":
-        "设备未找到，请检查VID/PID或连接状态",
-    "Device not found after reset; check the connection state":
-        "复位后未找到设备，请检查连接状态",
-    "Required input/output endpoints not found": "未找到所需的输入/输出端点",
-    "USB communication error: {e}": "USB通信错误: {e}",
 
     # ---- fixture / signal source / plan (SLogic32U3 handover) ------------
     'Cannot find the fixture: no 0403:6010 device reports a BL702 serial':

@@ -5,7 +5,6 @@ product profiles -- no hardcoded IDs.
 """
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -14,9 +13,7 @@ import usb.backend.libusb1
 import usb.core
 import usb.util
 
-from .profiles import (  # noqa: F401  (link_name / parse_link re-exported)
-    PLATFORM_KEY, RESOURCES_DIR, ProductProfile,
-    link_name, parse_link)
+from .profiles import PLATFORM_KEY, RESOURCES_DIR, ProductProfile, link_name
 
 
 class Mode(Enum):
@@ -89,15 +86,6 @@ def _serial_of(dev) -> str | None:
         return None
 
 
-def read_serial(vid: int, pid: int) -> str | None:
-    """SerialNumber of the (vid, pid) device currently enumerated, or None."""
-    try:
-        dev = usb.core.find(idVendor=vid, idProduct=pid, backend=libusb_backend())
-        return _serial_of(dev) if dev is not None else None
-    except Exception:
-        return None
-
-
 def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
     """Every SLogic device on the host, one entry per physical board (with
     its link speed and port), across all products and both modes."""
@@ -118,28 +106,6 @@ def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
             except Exception:
                 pass  # backend hiccups shouldn't kill the poll loop
     return found
-
-
-def find_pid(vid: int, pid: int) -> bool:
-    try:
-        return usb.core.find(idVendor=vid, idProduct=pid, backend=libusb_backend()) is not None
-    except Exception:
-        return False
-
-
-def wait_for_pid(vid: int, pid: int, timeout_s: float,
-                 poll_s: float = 0.5,
-                 cancel: threading.Event | None = None) -> bool:
-    """Poll until (vid, pid) enumerates.  False on timeout/cancel; the
-    caller decides whether to prompt the operator and keep waiting."""
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if cancel is not None and cancel.is_set():
-            return False
-        if find_pid(vid, pid):
-            return True
-        time.sleep(poll_s)
-    return False
 
 
 if __name__ == "__main__":

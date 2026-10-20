@@ -33,7 +33,6 @@ class StationController(QObject):
     step_note = pyqtSignal(str, str)             # step id, why it failed
     prompt = pyqtSignal(str)
     prompt_clear = pyqtSignal()
-    manual_switch = pyqtSignal(str)
     run_started = pyqtSignal(bool)              # True = whole-board run
     run_finished = pyqtSignal(bool, str, float)  # ok, detail report, elapsed s
     devices_changed = pyqtSignal()               # detected / last_detect updated
@@ -168,7 +167,6 @@ class StationController(QObject):
             on_step_note=lambda sid, note: self.step_note.emit(sid, note),
             on_user_prompt=self.prompt.emit,
             on_user_prompt_clear=self.prompt_clear.emit,
-            on_manual_switch=self.manual_switch.emit,
             on_finished=lambda ok, rep: self._pl_finished.emit(ok, rep))
 
     def _start(self, pl: pipeline_mod.Pipeline, full: bool = False):

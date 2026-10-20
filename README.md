@@ -1,7 +1,7 @@
 # SLogic-tools（产测工具）
 
 Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品**：SLogic16U3、SLogic32U3 及未来产品。
-新增产品 = 在 `resources/products/` 加一份 TOML 档案 + 按约定放置固件与夹具位流，**无需改代码**（详见 `resources/README.md`）。
+新增产品 = 在 `resources/products/` 加一份 TOML 档案 + 按约定放置夹具位流（有夹具的产品），**无需改代码**（详见 `resources/README.md`）。
 
 ## 产线工位
 
@@ -46,10 +46,8 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── fixture.py       #   夹具（Tang Nano 9K）位流加载（openFPGALoader 载入 SRAM）
 │   ├── fpga.py          #   夹具串口：切模式、存活检查
 │   ├── sigrok.py        #   sigrok-cli 采样封装（logic_channels 分组、回卷检测）
-│   ├── waveform.py      #   波形拆包（任意通道数）与 PWM 验证
-│   ├── flasher.py       #   DFU 烧写封装（保留供工程返修；OTA 由网页工具负责）
-│   └── dfu/             #   DFU USB-SPI Flash 烧写库 + CLI
-├── resources/           # 管理员资源：产品档案 / 固件 / 夹具位流 / sigrok-cli（见其 README）
+│   └── waveform.py      #   波形拆包（任意通道数）与 PWM 验证
+├── resources/           # 管理员资源：产品档案 / 夹具位流 / sigrok-cli（见其 README）
 ├── out/                 # 运行时采样输出（自动创建，不入库）
 ├── build.py             # PyInstaller 单二进制打包
 ├── requirements.txt
@@ -61,7 +59,7 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt                     # 需 Python 3.11+
-# 放置资源（sigrok-cli / 固件 / 夹具位流），见 resources/README.md
+# 放置资源（sigrok-cli / 夹具位流），见 resources/README.md
 python -m slogicpt                                  # 启动 GUI，点「开始」
 ```
 
@@ -74,7 +72,6 @@ python -m slogicpt                                  # 启动 GUI，点「开始�
 ## 命令行
 
 ```bash
-python -m slogicpt.dfu.spi_flash firmware.bin --pid 0x30F1 --addr 0x0   # DFU 烧写 CLI（工程用）
 python -m slogicpt.profiles      # 档案加载与资源自检
 python -m slogicpt.device_watch  # 设备插拔监视（含链路速率）
 python -m slogicpt.pipeline      # 流程引擎自测（步骤表、链路判据）

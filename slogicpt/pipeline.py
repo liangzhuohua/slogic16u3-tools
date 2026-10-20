@@ -19,8 +19,6 @@ from enum import Enum
 from typing import Callable
 
 from . import device_watch
-from . import flasher
-from . import mode_switch as mode_switch_mod
 from . import waveform
 from .i18n import t
 from .procutil import kill_image
@@ -43,8 +41,6 @@ class PipelineCallbacks:
     on_step: Callable[[str, StepStatus], None] = lambda name, st: None
     on_user_prompt: Callable[[str], None] = lambda s: None
     on_user_prompt_clear: Callable[[], None] = lambda: None
-    # 模式切换只剩人工方案（按板载 MODE 键）时的弹窗提示（GUI 弹 QMessageBox）
-    on_manual_switch: Callable[[str], None] = lambda s: None
     # one-line reason a step failed, sent just before its FAILED status
     on_step_note: Callable[[str, str], None] = lambda name, note: None
     on_finished: Callable[[bool, str], None] = lambda ok, report: None
@@ -81,14 +77,10 @@ class PipelineAbort(Exception):
 # Step-id -> English label. Shared by sequence_plan() and _sequence_defs() so
 # the two step lists never drift; each label is wrapped in t() at use sites.
 STEP_LABELS: dict[str, str] = {
-    "wait_dfu": "Wait for DFU device",
-    "flash_app": "DFU flash app firmware",
-    "switch_app": "Switch to APP mode",
-    "wait_app": "Wait for APP device",
-    "switch_dfu": "Switch to DFU mode",
     "signal:flash": "Fixture · flash signal generator",
     "link:check": "Check USB link",
 }
+
 
 def _sequence_spec(profile: ProductProfile
                    ) -> list[tuple[str, str, str, tuple, bool]]:
@@ -216,35 +208,6 @@ class Pipeline:
         p.steps = [StepDef("capture:custom", label, lambda: p._capture_one(
             channels, samplerate_hz, samples, voltage_threshold_v, expected_rows),
             abort_on_fail=False)]
-        return p
-
-    @classmethod
-    def reflash(cls, profile: ProductProfile, callbacks: PipelineCallbacks,
-                firmware_path=None) -> "Pipeline":
-        """返修复烧：（若设备在 APP 模式则）切回 DFU -> 等待 DFU 设备（超时提示
-        人工操作）-> 重写应用固件 -> 切换到 APP -> 等待应用模式回归。"""
-        p = cls(profile, None, callbacks, [])
-        p._firmware_override = firmware_path
-        p.steps = [StepDef("switch_dfu", t(STEP_LABELS["switch_dfu"]), p._switch_to_dfu),
-                   StepDef("wait_dfu", t(STEP_LABELS["wait_dfu"]), p._wait_dfu),
-                   StepDef("flash_app", t(STEP_LABELS["flash_app"]), p._flash_app),
-                   StepDef("switch_app", t(STEP_LABELS["switch_app"]), p._switch_to_app),
-                   StepDef("wait_app", t(STEP_LABELS["wait_app"]), p._wait_app)]
-        return p
-
-    @classmethod
-    def switch_mode(cls, profile: ProductProfile,
-                    callbacks: PipelineCallbacks, *, to_mode: str) -> "Pipeline":
-        """辅助操作：在 DFU（烧录模式）与 APP（应用模式）之间手动切换当前
-        设备，切换后等待目标模式就绪。to_mode='app' 即 DFU->APP，'dfu' 即
-        APP->DFU（方向由 GUI 依当前设备模式决定）。"""
-        p = cls(profile, None, callbacks, [])
-        if to_mode == "app":
-            p.steps = [StepDef("switch_app", t(STEP_LABELS["switch_app"]), p._switch_to_app),
-                       StepDef("wait_app", t(STEP_LABELS["wait_app"]), p._wait_app)]
-        else:
-            p.steps = [StepDef("switch_dfu", t(STEP_LABELS["switch_dfu"]), p._switch_to_dfu),
-                       StepDef("wait_dfu", t(STEP_LABELS["wait_dfu"]), p._wait_dfu)]
         return p
 
     # ---- lifecycle -------------------------------------------------------
@@ -514,127 +477,6 @@ class Pipeline:
                 from .profiles import parse_link
                 return parse_link(m.group(1))
         return None
-
-    def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:
-        self._log(t("Waiting for {what} device ({vid}:{pid})...").format(
-            what=what, vid=f"{self.profile.vid:#06x}", pid=f"{pid:#06x}"))
-        self._log(f"[criteria] wait {what}: success = USB "
-                  f"{self.profile.vid:#06x}:{pid:#06x} enumerated within "
-                  f"{timeout_s:.0f}s (then prompt+poll until replugged)")
-
-        def ready(manual: bool) -> bool:
-            self._log(t("{what} device ready").format(what=what)
-                      + (t(" (after manual intervention)") if manual else ""))
-            self._note_serial(pid, what)
-            return True
-
-        if device_watch.wait_for_pid(self.profile.vid, pid, timeout_s,
-                                     cancel=self.cancel):
-            return ready(False)
-        if self.cancel.is_set():
-            return False
-        # timeout -> prompt operator, keep polling indefinitely until cancel
-        self.cb.on_user_prompt(
-            t("Waiting for {what} device timed out -- please replug").format(what=what))
-        self.cb.on_step(f"wait_{what.lower()}", StepStatus.WAITING_USER)
-        try:
-            while not self.cancel.is_set():
-                if device_watch.find_pid(self.profile.vid, pid):
-                    return ready(True)
-                time.sleep(0.5)
-            return False
-        finally:
-            self.cb.on_user_prompt_clear()
-
-    def _note_serial(self, pid: int, what: str) -> None:
-        """Log the APP device's USB SerialNumber (version identifier); it is
-        also prepended to the final report."""
-        if what != "APP":
-            return
-        sn = device_watch.read_serial(self.profile.vid, pid)
-        self.app_serial = sn
-        self._log(t("APP SerialNumber: {sn} (for version identification/"
-                    "distinction)").format(sn=sn) if sn
-                  else t("APP device provided no SerialNumber descriptor"))
-
-    def _switch_to_app(self) -> bool:
-        """DFU->APP：向 DFU 设备触发切换（真正就绪由随后的 wait_app 判定）。"""
-        if self.profile.dfu_pid is None:
-            self._log(t("dfu_pid not configured, cannot switch to APP"))
-            return False
-        return self._switch(from_pid=self.profile.dfu_pid, to_what="APP")
-
-    def _switch_to_dfu(self) -> bool:
-        """APP->DFU（复烧前置）：若设备当前在 APP 模式则触发切回 DFU；否则跳过，
-        交由 wait_dfu 处理（人工插拔/上电）。"""
-        if device_watch.find_pid(self.profile.vid, self.profile.app_pid):
-            return self._switch(from_pid=self.profile.app_pid, to_what="DFU")
-        self._log(t("No APP device detected, skipping auto-switch, waiting for DFU directly"))
-        return True
-
-    def _switch(self, from_pid: int, to_what: str) -> bool:
-        """DFU<->APP 切换，按可用方案依次尝试：
-        1. usb_reconfig（product.toml 声明的产品自身能力）：USB 控制传输
-           RECONFIG，无需外置硬件；
-        2. 不可用/失败 -> 弹窗提示按板载 MODE 按键，随后的等待步骤
-        （含超时人工提示）确认真正就绪。"""
-        p = self.profile
-        if p.switch_usb_reconfig:
-            self._log(t("Sending RECONFIG to switch to {mode} mode ({vid}:{pid})...").format(
-                mode=to_what, vid=f"{p.vid:#06x}", pid=f"{from_pid:#06x}"))
-            try:
-                mode_switch_mod.reconfig(p.vid, from_pid, self._log)
-                return True
-            except mode_switch_mod.ModeSwitchError as e:
-                self._log(t("RECONFIG switch failed: {e}, trying fallback...").format(e=e))
-        # 只剩硬件操作：弹窗提示工人按板载 MODE 键，等待步骤兜底确认
-        msg = t("Please press the onboard MODE button to switch {name} to {mode} "
-                "mode; it will continue automatically once the target-mode device "
-                "is detected").format(name=p.display_name, mode=to_what)
-        self._log(msg)
-        self.cb.on_manual_switch(msg)
-        return True
-
-    def _wait_dfu(self) -> bool:
-        if self.profile.dfu_pid is None:
-            self._log(f"{self.profile.display_name}: " + t("dfu_pid not configured"))
-            return False
-        return self._wait_mode(self.profile.dfu_pid,
-                               self.profile.timeouts.wait_dfu_device_s, "DFU")
-
-    def _wait_app(self) -> bool:
-        return self._wait_mode(self.profile.app_pid,
-                               self.profile.timeouts.wait_app_device_s, "APP")
-
-    _firmware_override = None
-
-    def _flash_app(self) -> bool:
-        fw = self._firmware_override or self.profile.app_firmware
-        if fw is None or self.profile.dfu_pid is None:
-            self._log(t("Firmware or dfu_pid not configured, cannot flash"))
-            return False
-        self._log(f"[criteria] DFU flash: target {self.profile.vid:#06x}:"
-                  f"{self.profile.dfu_pid:#06x} @ {self.profile.app_flash_addr:#x}; "
-                  f"success = no USB/DFU error"
-                  + (", read-back verify on" if self.profile.verify_after_flash
-                     else ", verify OFF"))
-        o = self.profile.ota
-        self._log(f"[ota] write_chunk={o.write_chunk} read_chunk={o.read_chunk} "
-                  f"usb_timeout_ms={o.usb_timeout_ms} wip_timeout_s={o.wip_timeout_s} "
-                  f"reset_settle_s={o.reset_settle_s}")
-        try:
-            flasher.flash_app_firmware(
-                vid=self.profile.vid, pid=self.profile.dfu_pid,
-                addr=self.profile.app_flash_addr, firmware=fw,
-                verify=self.profile.verify_after_flash, ota=self.profile.ota,
-                log_cb=self._log, cancel=self.cancel,
-                app_pid=self.profile.app_pid)
-            self.report_lines.append(t("DFU flash") + f": OK ({fw})")
-            return True
-        except flasher.FlashError as e:
-            self._log(str(e))
-            self.report_lines.append(t("DFU flash") + f": FAIL ({e})")
-            return False
 
     def _capture_one(self, channels: int, samplerate_hz: int, samples: str,
                      voltage_threshold_v: float,

@@ -6,7 +6,7 @@ a directory:
 
     resources/products/<id>/
         product.toml      # profile (public)
-        firmware/          # app.bin, testgen.fs (factory, gitignored)
+        firmware/          # testgen.fs (factory, gitignored)
 
 Adding a new product requires only a new directory + resources -- no code
 changes.
@@ -179,41 +179,7 @@ class ExpectedSignal:
 
 @dataclass(frozen=True)
 class Timeouts:
-    wait_dfu_device_s: float = 30
-    wait_app_device_s: float = 30
-    dfu_flash_s: float = 600
     capture_s: float = 120
-
-
-@dataclass(frozen=True)
-class OtaParams:
-    """DFU app.bin 烧录（USB-SPI 桥）调参，来自 product.toml [ota]。默认即当前
-    保守稳定值——不写 [ota] 行为完全不变。提速主杠杆是 write_chunk：调大 = 每笔
-    USB 往返写更多字节 = 更快，但受桥接器 TX FIFO/单事务上限约束，过大会卡死总线
-    （SR1 恒读 0xFF）；调参时保持 verify=on，逐级上调确认稳定。各字段已在解析时
-    钳到安全范围。"""
-    write_chunk: int = 12        # 页编程每次 SPI 事务的数据字节（1..256，不跨 256 页边界）
-    read_chunk: int = 64         # 回读校验每次 CMD_READ_DATA 字节（1..512）
-    usb_timeout_ms: int = 1000   # 单次 USB 批量传输超时
-    wip_timeout_s: float = 5.0   # 页写/擦除完成轮询超时
-    reset_settle_s: float = 2.0  # 建链前整机复位后的重枚举等待（每次烧录固定开销）
-
-
-def _parse_ota(raw: dict) -> OtaParams:
-    """解析 [ota]，缺省回退默认值，并钳到安全范围（防止写坏/卡死）。"""
-    def ci(key: str, default: int, lo: int, hi: int) -> int:
-        return max(lo, min(hi, int(raw.get(key, default))))
-
-    def cf(key: str, default: float, lo: float, hi: float) -> float:
-        return max(lo, min(hi, float(raw.get(key, default))))
-
-    return OtaParams(
-        write_chunk=ci("write_chunk", 12, 1, 256),
-        read_chunk=ci("read_chunk", 64, 1, 512),
-        usb_timeout_ms=ci("usb_timeout_ms", 1000, 50, 600_000),
-        wip_timeout_s=cf("wip_timeout_s", 5.0, 0.1, 600.0),
-        reset_settle_s=cf("reset_settle_s", 2.0, 0.0, 30.0),
-    )
 
 
 @dataclass
@@ -233,7 +199,7 @@ class ProductProfile:
     display_name: str
     vid: int
     app_pid: int
-    dfu_pid: int | None                 # None -> DFU not configured
+    dfu_pid: int | None                 # DFU-mode PID, to recognise unflashed boards
     driver: str
     num_channels: int                   # device total channels -> unitsize = ceil(n/8)
     max_bandwidth_mbps: int
@@ -248,15 +214,8 @@ class ProductProfile:
     signal_source: SignalSource          # Tang Nano fixture, or an inert source
     plan: list[PlanEntry]                # modes x configs, with their check sets
     threshold_groups: list[ThresholdGroup]   # channels needing another threshold
-    app_firmware: Path | None           # resolved absolute path (may not exist yet)
-    app_flash_addr: int
-    verify_after_flash: bool
-    # DFU<->APP 切换：True -> 产品自身支持 USB 控制传输 RECONFIG（无需外置硬件）；
-    # False -> 弹窗提示人工按 MODE 键。
-    switch_usb_reconfig: bool
     product_dir: Path                   # resources/products/<id>/（固件等资源按此解析）
     timeouts: Timeouts
-    ota: OtaParams                      # DFU app.bin 烧录调参（product.toml [ota]）
     # 产测工位按顺序逐轮测试的 USB 链路（libusb speed 码，[usb] links），如 32U3
     # (10G, 5G)：先在 10G 下全测通过，再换插 5G 口重测，保证用户两种链路都可用。
     # 第一轮是门槛（达不到直接 FAIL）；空 -> 不设门槛、只测一轮。
@@ -437,18 +396,15 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         usb = doc["usb"]
         capture = doc["capture"]
         expected = doc.get("expected", {})
-        firmware = doc.get("firmware", {})
 
         prod_id = str(product["id"])
         if prod_id != product_dir.name:
             return err(t("product.id ({pid}) does not match directory name ({dirname})").format(
                 pid=prod_id, dirname=product_dir.name))
 
+        # optional: only lets the link check say "still in DFU mode" instead of
+        # "no board found"
         dfu_pid = usb.get("dfu_pid")
-        if dfu_pid is None:
-            problems.append(Problem(
-                "warning", prod_id,
-                t("usb.dfu_pid not configured; DFU and one-click flow will be disabled")))
 
         num_channels = int(capture["num_channels"])
         channel_options = [int(c) for c in capture["channel_options"]]
@@ -490,22 +446,10 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
                 return err(t("test point {ch}ch@{rate} exceeds bandwidth {bw}MB/s").format(
                     ch=ct.channels, rate=format_rate(ct.samplerate_hz), bw=max_bw))
 
-        app_rel = firmware.get("app")
-        app_firmware = (product_dir / app_rel).resolve() if app_rel else None
-
-        # DFU<->APP 切换能力：产品自身是否支持 USB 控制传输 RECONFIG（"USB LA
-        # 协议规范"0x30）；不支持则弹窗提示人工。
-        ms_raw = doc.get("mode_switch", {})
-        switch_usb_reconfig = bool(ms_raw.get("usb_reconfig", False))
-
         tmo = doc.get("timeouts", {})
         timeouts = Timeouts(
-            wait_dfu_device_s=float(tmo.get("wait_dfu_device_s", 30)),
-            wait_app_device_s=float(tmo.get("wait_app_device_s", 30)),
-            dfu_flash_s=float(tmo.get("dfu_flash_s", 600)),
             capture_s=float(tmo.get("capture_s", 120)),
         )
-        ota = _parse_ota(doc.get("ota", {}))
 
         default_vth = float(capture.get("voltage_threshold_v", 1.6))
         signal_source = _parse_signal_source(doc, product_dir, num_channels,
@@ -550,13 +494,8 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
                 freq_tol_pct=float(expected.get("freq_tol_pct", 5.0)),
                 duty_tol_pp=float(expected.get("duty_tol_pp", 5.0)),
             ),
-            app_firmware=app_firmware,
-            app_flash_addr=int(firmware.get("app_flash_addr", 0)),
-            verify_after_flash=bool(firmware.get("verify", True)),
-            switch_usb_reconfig=switch_usb_reconfig,
             product_dir=product_dir,
             timeouts=timeouts,
-            ota=ota,
         )
         # every link pass needs a config for every ready mode, or that pass would
         # silently test less than the others
@@ -625,29 +564,10 @@ def check_resources(profiles: list[ProductProfile],
             "error", None,
             t("sigrok-cli binary not found; place it in {d} with the platform-specific name (see resources/README.md); capture disabled").format(
                 d=RESOURCES_DIR / 'bin')))
-    for p in profiles:
-        if p.app_firmware is None:
-            problems.append(Problem("warning", p.id,
-                                    t("firmware.app not configured; DFU and one-click flow disabled")))
-        elif not p.app_firmware.is_file():
-            problems.append(Problem(
-                "warning", p.id,
-                t("application firmware missing: {path}; DFU and one-click flow disabled").format(
-                    path=p.app_firmware)))
     return problems
 
 
 if __name__ == "__main__":
-    # [ota] 解析自测：缺省回退默认、越界钳位、正常透传
-    assert _parse_ota({}) == OtaParams()
-    assert _parse_ota({"write_chunk": 9999}).write_chunk == 256   # 上限钳位
-    assert _parse_ota({"write_chunk": 0}).write_chunk == 1        # 下限钳位
-    assert _parse_ota({"read_chunk": 99999}).read_chunk == 512
-    assert _parse_ota({"reset_settle_s": -5}).reset_settle_s == 0.0
-    assert _parse_ota({"write_chunk": 128, "read_chunk": 256}) == \
-        OtaParams(write_chunk=128, read_chunk=256)
-    print("[ota] 解析自测 PASS")
-
     profiles, problems = load_profiles()
     print(f"== 加载 {len(profiles)} 个产品档案 ==")
     for p in profiles:
@@ -661,10 +581,6 @@ if __name__ == "__main__":
         print(f"  测试点: {', '.join(f'{t.channels}ch@{format_rate(t.samplerate_hz)}' for t in p.capture_tests)}")
         print(f"  期望: {p.expected.freq_hz/1e6:g}MHz ±{p.expected.freq_tol_pct}%, "
               f"{p.expected.duty_pct}% ±{p.expected.duty_tol_pp}pp")
-        print(f"  固件: {p.app_firmware} @ {p.app_flash_addr:#x}")
-        sw = ["USB RECONFIG"] if p.switch_usb_reconfig else []
-        sw.append("弹窗人工")
-        print(f"  模式切换: {' -> '.join(sw)}")
     print(f"\n== {len(problems)} 个问题 ==")
     for prob in problems:
         print(f"  {prob}")

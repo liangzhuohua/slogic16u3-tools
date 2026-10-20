@@ -9,7 +9,6 @@ resources/
 ├── products/<product_id>/        # 一产品一目录，目录名 = product_id
 │   ├── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 期望信号 / 模式切换），公开入库
 │   └── firmware/                 # 固件资源（工厂本地，禁止入库/公开）
-│       ├── app.bin               #   应用固件（DFU 引擎用，工程返修）
 │       └── testgen.fs            #   32U3：信号源夹具（Tang Nano 9K）位流，产测时载入夹具 SRAM
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
@@ -59,18 +58,12 @@ configs = [                # 每轮链路一组配置（5G 下驱动限速：32U
 
 档案自检会检查：每轮链路下每个启用的模式都有对应配置（否则启动即报错，避免某轮悄悄少测）。
 
-> DFU↔APP 模式切换（DFU 引擎用）：
-> 1. `[mode_switch] usb_reconfig = true`（product.toml）：产品自身经 USB 控制
->    传输 RECONFIG 双向切换（32U3），不依赖外置硬件；
-> 2. 不支持（或失败）：GUI 弹窗提示工人按板载 MODE 按键，检测到目标模式
->    设备后自动继续。
-
 ## 保密边界（重要）
 
 本仓库是公开仓库，以下内容**仅限工厂产测工位本地放置，禁止提交入库或以任何形式公开**
 （.gitignore 已强制忽略）：
 
-- `products/<id>/firmware/*.fs`、`*.bin` — 夹具位流、应用固件等资源
+- `products/<id>/firmware/*.fs`、`*.bin` — 夹具位流等资源
 - `products/<id>/firmware/*.ekey`、`efuse_key.txt` — eFuse AES 密钥（机密；本工具已不用，
   .gitignore 仍保留规则以防误提交）
 
@@ -82,8 +75,6 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
 
 | 警告 | 解决办法 |
 |---|---|
-| `usb.dfu_pid 未配置` | 硬件确认该产品 DFU 模式 PID 后填入 `product.toml` 的 `[usb] dfu_pid` |
-| `应用固件缺失: .../app.bin` | 把应用固件放到 `products/<id>/firmware/app.bin` |
 | `未找到 sigrok-cli 二进制` | 按平台命名放入 `bin/`（见上文） |
 | `未找到 libusb 后端（libusb-1.0.dll）` | Windows：把 `libusb-1.0.dll` 放进 `bin/`（见跨平台一节），并给设备装 WinUSB 驱动 |
 
@@ -117,7 +108,7 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
     未改动，构建方式如上——满足"可重链/可复现"。
   - `wdi-simple.exe`：libwdi 的 CLI 示例（[pbatard/libwdi](https://github.com/pbatard/libwdi)，
     LGPL-3，**未改动**），从 Gowin USB Cable Driver 安装包（NSIS）提取。
-- **libusb 后端**：本工具用 pyusb 枚举 USB 设备（DFU/APP 检测、RECONFIG 切换）。
+- **libusb 后端**：本工具用 pyusb 枚举 USB 设备（识别产品、APP/DFU 模式、链路速率）。
   - 推荐**把 `libusb-1.0.dll` 内置到 `resources/bin/`**——LGPL 允许随项目分发，工位免装依赖；
     工具会**优先加载这个内置 DLL**（见 `slogicpt/device_watch.libusb_backend`），`build.py`
     也会自动把它打包进 exe。`.gitignore` 已放行该文件，可 `git add` 入库随项目走。
@@ -125,7 +116,7 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
     描述符，Win10+ 通常自动装 WinUSB；否则用 Zadig 手动指定 WinUSB）。
   - 缺后端时 GUI 顶栏会**显式红字告警**"未找到 libusb 后端"，不再静默显示"无设备"。
 
-- **Linux 权限**：libusb 通常能枚举设备，但读序列号 / 发 DFU↔APP 的 RECONFIG 控制传输
+- **Linux 权限**：libusb 通常能枚举设备，但读序列号、sigrok 采集与 openFPGALoader 载入夹具
   需要访问权限。缺 udev 规则时会报 `LIBUSB_ERROR_ACCESS`。**推荐在 GUI 底部的
   「环境准备」页点「部署」一键装好**（弹 polkit 授权，内部经 `pkexec` 写入下面的规则并
   `udevadm reload`）；点「移除」即删除。也可手动：
@@ -137,7 +128,7 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
   sudo udevadm control --reload-rules && sudo udevadm trigger   # 之后重新插拔设备
   ```
   （`TAG+="uaccess"` 让当前登录用户获得访问权，跨发行版通用；症状：设备能被检测到，
-  但切换模式或读序列号报权限错误。之后重新插拔设备生效。）
+  但读序列号、采集或载入夹具报权限错误。之后重新插拔设备生效。）
 
 ### Windows 工位放置清单
 
@@ -163,9 +154,8 @@ SLogicPT/
 
 ## 产品档案要点
 
-- `usb.dfu_pid`（16U3=0x30F1、32U3=0x30F2）供 DFU 引擎使用；应用固件 OTA 由批量网页工具负责，不在本工具；
+- `usb.dfu_pid`（16U3=0x30F1、32U3=0x30F2）可选：只用于把"还在 DFU、没烧 app 固件"的板子认出来并提示；应用固件 OTA 由批量网页工具负责；
 - `capture.samplerates` 必须填 sigrok 驱动实际支持的档位（`sigrok-cli -d <driver> --show` 查询），
   GUI 会再按 `channels × rate / 8 ≤ max_bandwidth_mbps` 过滤展示；
-- `firmware.app_flash_addr` 因产品而异，填错会导致固件无法启动；
 - `[[capture.tests]]` 是没有 `[[plan]]`（无夹具）的产品逐组执行的测试点（如 16U3 的外置固定信号源）；
 - `[usb] links` 决定产测轮数与门槛；`[[plan]]` 每组 `configs` 的 `link` 标注它属于哪一轮。

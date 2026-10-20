@@ -5,8 +5,8 @@ operator never has to open a terminal:
 
 * Linux  -- a udev rule granting the logged-in operator access to the SLogic
   USB device (VID 0x359F) and the fixture's FTDI (0x0403:0x6010 used by
-  openFPGALoader).  Without it libusb can *enumerate* but ctrl_transfer
-  (DFU<->APP), serial reads and flashing fail with LIBUSB_ERROR_ACCESS.
+  openFPGALoader).  Without it libusb can *enumerate* but serial reads,
+  captures and fixture loading fail with LIBUSB_ERROR_ACCESS.
   Needs root -> runs via pkexec (graphical polkit prompt).
 
 * Windows -- binding the FTDI A-channel (interface 0 of 0x0403:0x6010) to the
@@ -74,9 +74,9 @@ def hint() -> str:
                  "(0403:6010) for root-free access; deploying pops up an "
                  "authorization dialog, then replug the device to take effect.")
     if req == "winusb":
-        return t("Bind the FTDI A-channel (0403:6010 interface 0) to WinUSB, "
-                 "required by openFPGALoader's high-speed flashing; deploying "
-                 "pops up a UAC authorization dialog.")
+        return t("Bind the fixture's FTDI A-channel (0403:6010 interface 0) to WinUSB, "
+                 "which openFPGALoader needs to load the fixture; deploying pops up "
+                 "a UAC authorization dialog.")
     return ""
 
 

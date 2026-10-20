@@ -60,7 +60,6 @@ class MainWindow(QMainWindow):
         self._caption = ""                  # "", "remove" or "next"
         self._prompt = ""
         self._current_sid = ""
-        self._switch_popup: QMessageBox | None = None
         self._params: ParamDialog | None = None
 
         ctl = self.ctl
@@ -69,7 +68,6 @@ class MainWindow(QMainWindow):
         ctl.step_note.connect(self._on_step_note)
         ctl.prompt.connect(self._on_prompt)
         ctl.prompt_clear.connect(self._on_prompt_clear)
-        ctl.manual_switch.connect(self._on_manual_switch)
         ctl.run_started.connect(self._on_run_started)
         ctl.run_finished.connect(self._on_finished)
         ctl.devices_changed.connect(self._on_devices)
@@ -468,10 +466,6 @@ class MainWindow(QMainWindow):
                 s.duration = time.time() - s.t_start
             s.status = status
             self.stepper.set_status(sid, status, s.duration)
-        # the manual-switch popup closes once the following "wait for device"
-        # step is over (device ready / failed)
-        if sid.startswith("wait_") and status in (StepStatus.PASSED, StepStatus.FAILED):
-            self._close_switch_popup()
         if status == StepStatus.RUNNING:
             self._current_sid = sid
             if not self._prompt:
@@ -569,7 +563,6 @@ class MainWindow(QMainWindow):
         self._update_enablement()
 
     def _on_finished(self, ok: bool, detail: str, elapsed: float):
-        self._close_switch_popup()
         # a cancelled run leaves its current step without a final status
         for sid, s in self._steps.items():
             if s.status in (StepStatus.RUNNING, StepStatus.WAITING_USER):
@@ -593,24 +586,6 @@ class MainWindow(QMainWindow):
         self._prompt = ""
         if self.ctl.busy:
             self._show_result("running", sid=self._current_sid)
-
-    def _on_manual_switch(self, text: str):
-        """Popup when a mode switch needs a hardware action (non-modal: the
-        pipeline keeps waiting for the device; _on_step closes it)."""
-        self._close_switch_popup()
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Information)
-        box.setWindowTitle(t("Manual mode switch required"))
-        box.setText(text)
-        box.setStandardButtons(QMessageBox.Ok)
-        box.setModal(False)
-        box.show()
-        self._switch_popup = box
-
-    def _close_switch_popup(self):
-        if self._switch_popup is not None:
-            self._switch_popup.close()
-            self._switch_popup = None
 
     def _append_log(self, s: str):
         self.log_box.appendPlainText(s)
