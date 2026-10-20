@@ -155,7 +155,13 @@ def _narrow_pulse(ch: int, fs: float) -> Expect:
                       note="width ladder 1,2,4,...,128 clk_sys (18.5 ns ~ 2370 ns), "
                            "8 rungs, one rung per 10 us so a full sweep is 80 us",
                       covered_by="窄脉冲宽度检查")
-    return _freq_or_skip(ch, 1000.0, fs, note="1 kHz reference fill")
+    # Adjacent fill channels run in anti-phase (testgen 2026-10-20: CH6, CH8, ...
+    # are inverted).  With all 27 in phase, every edge was 27 simultaneous
+    # same-direction transitions, and the resulting common-mode disturbance
+    # put 5-25 ns glitches on the 1.8 V bank 3 channels.  Frequency and duty
+    # are unchanged, so the expectation is too.
+    return _freq_or_skip(ch, 1000.0, fs,
+                         note="1 kHz reference fill, adjacent channels in anti-phase")
 
 
 def _burst(ch: int, fs: float) -> Expect:
