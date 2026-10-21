@@ -1,7 +1,7 @@
 # SLogic-tools（产测工具）
 
 Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品**：SLogic16U3、SLogic32U3 及未来产品。
-新增产品 = 在 `resources/products/` 加一份 TOML 档案，**无需改代码**（详见 `resources/README.md`）。夹具（Tang Nano 9K）的图案设计预先烧在夹具 Flash 里，工具只切换模式、不烧录。
+新增产品 = 在 `resources/products/` 加一份 TOML 档案 + 按约定放置夹具位流（有夹具的产品），**无需改代码**（详见 `resources/README.md`）。
 
 ## 产线工位
 
@@ -43,10 +43,11 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── patterns.py      #   夹具图案的期望值（唯一权威，由 RTL 推导）
 │   ├── checks.py        #   判定层：逐通道 + 结构化判定（不滤波；判不了即 FAIL）
 │   ├── deep_checks.py   #   内容级检查：SPI/I2C/UART 解码、突发包络
+│   ├── fixture.py       #   夹具（Tang Nano 9K）位流加载（openFPGALoader 载入 SRAM）
 │   ├── fpga.py          #   夹具串口：切模式、存活检查
 │   ├── sigrok.py        #   sigrok-cli 采样封装（logic_channels 分组、回卷检测）
 │   └── waveform.py      #   波形拆包（任意通道数）与 PWM 验证
-├── resources/           # 管理员资源：产品档案 / 夹具位流（备烧录用）/ sigrok-cli（见其 README）
+├── resources/           # 管理员资源：产品档案 / 夹具位流 / sigrok-cli（见其 README）
 ├── out/                 # 运行时采样输出（自动创建，不入库）
 ├── build.py             # PyInstaller 单二进制打包
 ├── requirements.txt
@@ -58,14 +59,14 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt                     # 需 Python 3.11+
-# 放置 sigrok-cli，见 resources/README.md
+# 放置资源（sigrok-cli / 夹具位流），见 resources/README.md
 python -m slogicpt                                  # 启动 GUI，点「开始」
 ```
 
 台架要点：
 
 - **sigrok-cli 须用 SLogic 2.3.0 及以上**：旧版在 4ch@1400M 会回卷到 1600M、8ch@800M 收不到数据。
-- 产测台架不要接 Gowin 烧录器：它和夹具（BL702）同为 FTDI `0403:6010`，自动找夹具串口时会多出两个候选口。
+- 产测台架不要接 Gowin 烧录器：它和夹具（BL702）同为 FTDI `0403:6010`，其 JTAG 操作还会干扰夹具 FPGA 的 SRAM 配置。
 - 产品识别：按 USB PID。
 
 ## 命令行

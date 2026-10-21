@@ -299,10 +299,10 @@ class StationController(QObject):
     # --------------------------------------------------- environment prep
 
     def run_env_setup(self, action: str):
-        """Deploy/remove the udev rule off the UI thread (pkexec pops an
-        authorization dialog)."""
-        # env logs stay ASCII/English on purpose: they interleave with the
-        # output of system tools (pkexec / udevadm)
+        """Deploy/remove the platform prerequisite (udev / WinUSB) off the UI
+        thread; both operations pop a system auth dialog (pkexec / UAC)."""
+        # env logs stay ASCII/English on purpose: they interleave with output
+        # from Windows tools (pnputil/wdi) that we can't force into one locale.
         self.log.emit(f"===== env setup: {action} ({env_setup.requirement()}) =====")
 
         def worker():

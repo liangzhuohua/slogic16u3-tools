@@ -931,7 +931,8 @@ class MainWindow(QMainWindow):
             self.ctl.refresh_devices()    # permissions/driver may now differ
 
     def _refresh_env_buttons(self):
-        """Deploy / Remove follow whether the udev rule file exists."""
+        """Linux: the rule file is directly checkable; Windows: the WinUSB
+        binding isn't cheaply queryable, so both buttons stay enabled."""
         if self.env_deploy_btn is None:
             return
         st = env_setup.status()

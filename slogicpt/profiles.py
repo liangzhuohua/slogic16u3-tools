@@ -1,7 +1,8 @@
 """Product profile loading / validation / resource self-check.
 
 All product differences (VID/PID, channels, bandwidth, test plan, timeouts)
-live in resources/products/<id>/product.toml.
+live in resources/products/<id>/product.toml.  The fixture bitstream they test
+with, resources/fixture/testgen.fs, is shared by every product.
 
 Adding a new product requires only a new directory + resources -- no code
 changes.
@@ -110,6 +111,10 @@ class SignalSource:
     baud: int
     settle_ms: int                       # quiet time after a mode change
     reply_timeout_ms: int
+    firmware: Path | None                # Tang Nano bitstream, for the fixture step
+    firmware_run: int                    # Gowin operation index (2 = SRAM Program)
+    firmware_device: str                 # Gowin --device, e.g. GW1NR-9C
+    firmware_cable: str                  # Gowin --cable, e.g. "USB Debugger A"
     channel_order: tuple[int, ...]       # generator channel -> analyser channel
 
     @property
@@ -205,7 +210,7 @@ class ProductProfile:
     signal_source: SignalSource          # Tang Nano fixture, or an inert source
     plan: list[PlanEntry]                # modes x configs, with their check sets
     threshold_groups: list[ThresholdGroup]   # channels needing another threshold
-    product_dir: Path                   # resources/products/<id>/
+    product_dir: Path                   # resources/products/<id>/（固件等资源按此解析）
     timeouts: Timeouts
     # 产测工位按顺序逐轮测试的 USB 链路（libusb speed 码，[usb] links），如 32U3
     # (10G, 5G)：先在 10G 下全测通过，再换插 5G 口重测，保证用户两种链路都可用。
@@ -227,7 +232,7 @@ class ProductProfile:
         return [r for r in self.samplerates_hz if channels * r // 8 <= limit]
 
 
-def _parse_signal_source(doc: dict, num_channels: int,
+def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
                          problems: list, pid_for_log: str) -> SignalSource:
     """Parse [signal_source]. Absent section -> an inert "none" source."""
     raw = doc.get("signal_source")
@@ -236,6 +241,9 @@ def _parse_signal_source(doc: dict, num_channels: int,
         # [[capture.tests]] against an external fixed source instead.
         return SignalSource(kind="none", serial="auto", vid=0x0403, pid=0x6010,
                             baud=115200, settle_ms=400, reply_timeout_ms=1000,
+                            firmware=None, firmware_run=2,
+                            firmware_device="GW1NR-9C",
+                            firmware_cable="USB Debugger A",
                             channel_order=tuple(range(num_channels)))
 
     kind = str(raw.get("type", "none")).lower()
@@ -244,6 +252,9 @@ def _parse_signal_source(doc: dict, num_channels: int,
                                 t("signal_source.type {k!r} is not one of "
                                   "fpga/external/none").format(k=kind)))
         kind = "none"
+
+    fw_rel = raw.get("firmware")
+    firmware = (product_dir / str(fw_rel)).resolve() if fw_rel else None
 
     order_raw = raw.get("channel_order")
     if order_raw is None:
@@ -265,6 +276,10 @@ def _parse_signal_source(doc: dict, num_channels: int,
         baud=int(raw.get("baud", 115200)),
         settle_ms=int(raw.get("settle_ms", 400)),
         reply_timeout_ms=int(raw.get("reply_timeout_ms", 1000)),
+        firmware=firmware,
+        firmware_run=int(raw.get("firmware_run", 2)),
+        firmware_device=str(raw.get("firmware_device", "GW1NR-9C")),
+        firmware_cable=str(raw.get("firmware_cable", "USB Debugger A")),
         channel_order=order,
     )
 
@@ -433,12 +448,17 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         )
 
         default_vth = float(capture.get("voltage_threshold_v", 1.6))
-        signal_source = _parse_signal_source(doc, num_channels,
+        signal_source = _parse_signal_source(doc, product_dir, num_channels,
                                              problems, prod_id)
         plan = _parse_plan(doc, num_channels, samplerates_hz, capture,
                            problems, prod_id)
         threshold_groups = _parse_threshold_groups(doc, num_channels, default_vth,
                                                    problems, prod_id)
+        if plan and signal_source.is_fpga and signal_source.firmware is None:
+            problems.append(Problem(
+                "warning", prod_id,
+                t("signal_source.type is fpga but no firmware is declared; the "
+                  "fixture cannot be reflashed by the tool")))
 
         profile = ProductProfile(
             id=prod_id,
