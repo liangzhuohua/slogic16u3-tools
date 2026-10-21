@@ -177,6 +177,10 @@ ZH: dict[str, str] = {
     # ---- fixture / signal source / plan (SLogic32U3 handover) ------------
     'Cannot find the fixture: no 0403:6010 device reports a BL702 serial':
         '找不到夹具：没有任何 0403:6010 设备的序列号含 BL702',
+    'openFPGALoader --scan-usb did not run: {p}': 'openFPGALoader --scan-usb 运行失败：{p}',
+    'no 0403:6010 device': '没有 0403:6010 设备',
+    "On Windows the fixture's FTDI channel A must use the WinUSB driver: deploy it on the Environment Setup page, then replug the fixture":
+        'Windows 上夹具 FTDI 的 A 通道必须用 WinUSB 驱动：到「环境准备」页点「部署」，然后重新插拔夹具',
     'Loading fixture with openFPGALoader: {name} (FTDI serial {s})':
         '用 openFPGALoader 烧录夹具：{name}（FTDI 序列号 {s}）',
     'openFPGALoader reported no success marker (rc={rc})':

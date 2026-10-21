@@ -62,11 +62,19 @@ def _fixture_ftdi_serial(log) -> str | None:
         return None
     rows = _ftdi_rows(exe)
     if rows is None:
+        log(t("openFPGALoader --scan-usb did not run: {p}").format(p=exe))
         return None
     for _, serial, _ in rows:
         if is_fixture_serial(serial):
             return serial
     log(t("Cannot find the fixture: no 0403:6010 device reports a BL702 serial"))
+    log("   openFPGALoader --scan-usb: " + ("; ".join(" ".join(r) for r in rows)
+                                           or t("no 0403:6010 device")))
+    if procutil.IS_WINDOWS:
+        # the serial port (channel B) answers through the FTDI driver, but
+        # openFPGALoader reaches channel A through libusb, which needs WinUSB
+        log(t("On Windows the fixture's FTDI channel A must use the WinUSB driver: "
+              "deploy it on the Environment Setup page, then replug the fixture"))
     return None
 
 
