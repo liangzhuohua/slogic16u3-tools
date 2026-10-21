@@ -18,8 +18,8 @@ STATUS_TEXT = {
 
 
 def render(ok: bool, detail: str, elapsed: float, profile,
-           devices: list, steps: list[tuple[StepStatus, str, float | None]]) -> str:
-    """steps: (status, "n. name", duration) in run order."""
+           devices: list, steps: list[tuple[StepStatus, str, float | None, int]]) -> str:
+    """steps: (status, "n. name", duration, operator retries) in run order."""
     lines = [
         "==== " + t("SLogic Production Test Report") + " ====",
         t("Time: {ts}").format(ts=time.strftime('%Y-%m-%d %H:%M:%S')),
@@ -32,9 +32,10 @@ def render(ok: bool, detail: str, elapsed: float, profile,
         "",
         "-- " + t("Step Status") + " --",
     ]
-    for status, name, duration in steps:
+    for status, name, duration, retries in steps:
         dur = f" ({duration:.1f}s)" if duration else ""
-        lines.append(f"[{t(STATUS_TEXT[status])}] {name}{dur}")
+        again = t(" (retried {n}x)").format(n=retries) if retries else ""
+        lines.append(f"[{t(STATUS_TEXT[status])}] {name}{dur}{again}")
     if detail:
         lines += ["", "-- " + t("Details") + " --", detail]
     lines += ["", t("To report an issue, copy this report and attach the "

@@ -186,6 +186,26 @@ class StationController(QObject):
             self.profile, self.sigrok, self._callbacks(), step_id,
             all_profiles=self.profiles))
 
+    def can_retry(self) -> bool:
+        """A failed step may be rerun by hand when nothing is running and the
+        board it failed on is still the one in front of us (disarmed, or
+        armed and waiting for that board to be removed)."""
+        return (self.profile is not None and not self.busy
+                and (not self.armed or self.arm_state == "wait_remove"))
+
+    def retry_steps(self, step_ids: list[str], label: str):
+        """Operator-requested retry: rerun these steps of the board's own
+        sequence, in order.  Never started by the tool itself."""
+        if not step_ids or not self.can_retry():
+            return
+        pl = pipeline_mod.Pipeline.for_board(
+            self.profile, self.sigrok, self._callbacks(), all_profiles=self.profiles)
+        pl.steps = [s for s in pl.steps if s.id in step_ids]
+        if not pl.steps:
+            return
+        self.log.emit("===== " + t("Retry: {label}").format(label=label) + " =====")
+        self._start(pl)
+
     def run_capture(self, **params):
         """Custom capture (engineering): channels, samplerate_hz, samples,
         voltage_threshold_v, expected_rows."""

@@ -40,6 +40,7 @@ class _Step:
     t_start: float | None = None
     duration: float | None = None
     note: str = ""                    # why it failed (shown under the step)
+    retries: int = 0                  # operator retries on this board
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +61,9 @@ class MainWindow(QMainWindow):
         self._caption = ""                  # "", "remove" or "next"
         self._prompt = ""
         self._current_sid = ""
+        self._retry_label = ""              # set while an operator retry runs
+        self._run_detail = ""               # this board's report detail so far
+        self._run_elapsed = 0.0
         self._params: ParamDialog | None = None
 
         ctl = self.ctl
@@ -115,6 +119,7 @@ class MainWindow(QMainWindow):
         self.stepper = Stepper()
         self.stepper.setMinimumHeight(150)
         self.stepper.run_requested.connect(self._run_single_step)
+        self.stepper.retry_requested.connect(self._retry_step)
         self.stepper.settings_requested.connect(self._open_params)
         sc.addWidget(self.stepper)
         body.addWidget(step_card)
@@ -397,6 +402,9 @@ class MainWindow(QMainWindow):
                             t("Connect a board first (click Start to recognise it)")))
         if self._params is not None:
             self._params.run_btn.setEnabled(ctl.sampling_possible())
+        can_retry = ctl.can_retry()
+        for sid, s in self._steps.items():
+            self.stepper.set_retry(sid, can_retry and s.status == StepStatus.FAILED)
 
     # ----------------------------------------------------------- the steps
 
@@ -423,7 +431,8 @@ class MainWindow(QMainWindow):
         for step_id, name in plan:
             prev = old.get(step_id)
             self._steps[step_id] = _Step(name, *(
-                (prev.status, prev.t_start, prev.duration, prev.note) if prev else ()))
+                (prev.status, prev.t_start, prev.duration, prev.note, prev.retries)
+                if prev else ()))
             self._fixture_need[step_id] = self._fixture_need_of(step_id, has_fixture)
             rows.append((step_id, name, "", step_id.startswith("capture")))
         self.stepper.set_steps(rows)
@@ -506,8 +515,13 @@ class MainWindow(QMainWindow):
                                          f"{d['elapsed']:.1f}s") if x)
             failed = [s.label + (f" — {s.note}" if s.note else "")
                       for s in self._steps.values() if s.status == StepStatus.FAILED]
-            detail = (t("Failed steps: {items}").format(items="\n".join(failed))
-                      if kind == "fail" and failed else "")
+            retried = [s.label for s in self._steps.values() if s.retries]
+            if kind == "fail" and failed:
+                detail = t("Failed steps: {items}").format(items="\n".join(failed))
+            elif kind == "pass" and retried:
+                detail = t("Passed after retry: {items}").format(items=", ".join(retried))
+            else:
+                detail = ""
             self.result_card.set_state(kind, "PASS" if kind == "pass" else "FAIL",
                                        sub, detail, caption)
 
@@ -543,8 +557,28 @@ class MainWindow(QMainWindow):
         s = self._steps.get(sid)
         self.ctl.run_single_step(sid, s.label if s else sid)
 
+    def _retry_step(self, sid: str):
+        """Operator pressed Retry under a failed step: rerun it, then the
+        steps right after it that never ran because it aborted the run.  Stop
+        at the first step that did run -- a later failed step has its own
+        Retry, and the steps behind it depend on it (e.g. the 5G replug)."""
+        order = list(self._steps)
+        if sid not in order or not self.ctl.can_retry():
+            return
+        todo = [sid]
+        for x in order[order.index(sid) + 1:]:
+            if self._steps[x].status != StepStatus.PENDING:
+                break
+            todo.append(x)
+        s = self._steps[sid]
+        s.retries += 1
+        self._retry_label = s.label
+        self.ctl.retry_steps(todo, s.label)
+
     def _on_run_started(self, full: bool):
         if full:
+            self._run_detail, self._run_elapsed = "", 0.0
+            self._retry_label = ""
             # a new board: its own steps, all pending; params for its product
             self._layout_steps(force=True)
             self._fill_params(self.ctl.profile)
@@ -574,12 +608,23 @@ class MainWindow(QMainWindow):
         self._prompt = ""
         if self.ctl.armed:
             self._caption = "remove"
+        if self._retry_label:
+            # a retry judges the whole board again: pass only when every step
+            # of it has now passed; the report keeps the earlier detail
+            ok = all(s.status == StepStatus.PASSED for s in self._steps.values())
+            detail = (self._run_detail + "\n\n-- "
+                      + t("Retry: {label}").format(label=self._retry_label)
+                      + " --\n" + detail)
+            elapsed = self._run_elapsed + elapsed
+            self._retry_label = ""
+        self._run_detail, self._run_elapsed = detail, elapsed
         self._show_result("pass" if ok else "fail", elapsed=elapsed)
-        steps = [(s.status, f"{i}. {s.label}", s.duration)
+        steps = [(s.status, f"{i}. {s.label}", s.duration, s.retries)
                  for i, s in enumerate(self._steps.values(), start=1)]
         self.report_box.setPlainText(report.render(
             ok, detail, elapsed, self.ctl.profile,
             self.ctl.detected, steps))
+        self._update_enablement()
 
     def _on_prompt(self, text: str):
         self._prompt = text

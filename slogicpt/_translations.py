@@ -321,4 +321,14 @@ ZH: dict[str, str] = {
         '未插入',
     'capture retried {n}x: {why}':
         '采集重试 {n} 次后成功（{why}）',
+    'Retry':
+        '重试',
+    'Run this step again (and the steps after it that have not run)':
+        '重新执行这一步（以及它之后尚未执行的步骤）',
+    'Retry: {label}':
+        '重试：{label}',
+    'Passed after retry: {items}':
+        '重试后通过：{items}',
+    ' (retried {n}x)':
+        '（重试 {n} 次）',
 }

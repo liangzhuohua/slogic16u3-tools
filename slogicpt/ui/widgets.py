@@ -140,6 +140,7 @@ class StepNode(QWidget):
 
     clicked = pyqtSignal(str)
     settings = pyqtSignal(str)
+    retry = pyqtSignal(str)
 
     def __init__(self, number: int, sid: str, name: str, req: str, has_settings: bool):
         super().__init__()
@@ -170,6 +171,14 @@ class StepNode(QWidget):
         self.note.setWordWrap(True)
         self.note.hide()
         lay.addWidget(self.note)
+        # shown only on a failed step, and only when nothing is running;
+        # pressed by the operator -- the tool never retries a step by itself
+        self.retry_btn = button(t("Retry"), "tonal", "refresh",
+                                tip=t("Run this step again (and the steps after "
+                                      "it that have not run)"))
+        self.retry_btn.clicked.connect(lambda: self.retry.emit(self.sid))
+        self.retry_btn.hide()
+        lay.addWidget(self.retry_btn, 0, Qt.AlignHCenter)
         if has_settings:
             self.gear = button(t("Test Params"), "text", "tune", "primary")
             self.gear.clicked.connect(lambda: self.settings.emit(self.sid))
@@ -233,6 +242,7 @@ class Stepper(QWidget):
 
     run_requested = pyqtSignal(str)
     settings_requested = pyqtSignal(str)
+    retry_requested = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -287,6 +297,7 @@ class Stepper(QWidget):
             node = StepNode(i, sid, name, req, has_settings)
             node.clicked.connect(self.run_requested)
             node.settings.connect(self.settings_requested)
+            node.retry.connect(self.retry_requested)
             lay.addWidget(node, 2)
             self.nodes[sid] = node
             prev = node
@@ -304,6 +315,11 @@ class Stepper(QWidget):
             self._spin.start()
         elif not running:
             self._spin.stop()
+
+    def set_retry(self, sid: str, show: bool):
+        node = self.nodes.get(sid)
+        if node is not None:
+            node.retry_btn.setVisible(show)
 
     def set_note(self, sid: str, text: str):
         """Short failure reason under a step; the full text is its tooltip."""

@@ -380,10 +380,9 @@ class Pipeline:
                     return True
                 time.sleep(0.5)
                 waited += 0.5
-                # 每 30 秒重述一次，避免操作员以为卡住了。用 int(waited) 时
-                # waited=0.5 会让 int()=0 也满足 %30==0，于是刚提示完就马上又打
-                # 一条 "still waiting (0s)"，看起来像出错。
-                if waited >= 30 and int(waited) % 30 == 0:
+                # 每 30 秒重述一次，避免操作员以为卡住了。waited 按 0.5 递增，
+                # 直接对它取模：用 int(waited) 会让 30.0 和 30.5 各打一行。
+                if waited >= 30 and waited % 30 == 0:
                     self._log("[fixture] " + t("still waiting ({s}s): {m}").format(
                         s=int(waited), m=msg))
             return False
