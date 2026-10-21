@@ -37,7 +37,12 @@ _PLATFORM_BINARIES = {
 
 
 class CaptureError(Exception):
-    pass
+    """A failed capture.  `output` is what sigrok-cli printed, so callers can
+    tell a busy/absent device from a real analyzer fault by its own words."""
+
+    def __init__(self, message: str, output: str = ""):
+        super().__init__(message)
+        self.output = output
 
 
 def find_sigrok_binary(bin_dir: Path = RESOURCES_DIR / "bin") -> Path | None:
@@ -205,28 +210,29 @@ class SigrokCli:
                 log_cb(line)
         elapsed = time.time() - start
         if fate.killed_by == "cancel":
-            raise CaptureError(t("Capture cancelled"))
+            raise CaptureError(t("Capture cancelled"), output=text)
         if fate.killed_by == "timeout":
-            raise CaptureError(t("Capture timed out ({s:.0f}s)").format(s=timeout_s))
+            raise CaptureError(t("Capture timed out ({s:.0f}s)").format(s=timeout_s),
+                               output=text)
 
         if wrapped_rate is not None:
             raise CaptureError(
                 t("Device does not support samplerate {rate} "
                   "(driver wrapped to {wrapped}). "
                   "Please fix the product profile capture.samplerates").format(
-                    rate=format_rate(samplerate_hz), wrapped=wrapped_rate))
+                    rate=format_rate(samplerate_hz), wrapped=wrapped_rate), output=text)
         if proc.returncode != 0:
             raise CaptureError(t("sigrok-cli exit code {code}").format(
-                code=proc.returncode))
+                code=proc.returncode), output=text)
         if not out_file.is_file() or out_file.stat().st_size == 0:
             raise CaptureError(t("No capture data file produced: {path}").format(
-                path=out_file))
+                path=out_file), output=text)
 
         from .waveform import strip_frame_markers
         payload = strip_frame_markers(out_file.read_bytes())
         n_samples = len(payload) // unitsize
         if n_samples == 0:
-            raise CaptureError(t("Capture data is less than one full sample"))
+            raise CaptureError(t("Capture data is less than one full sample"), output=text)
         return CaptureResult(
             out_file=out_file, unitsize=unitsize,
             num_channels=channels, samplerate_hz=samplerate_hz,

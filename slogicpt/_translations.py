@@ -319,4 +319,6 @@ ZH: dict[str, str] = {
         '为 SLogic(359F) 安装 udev 规则，免 root 访问；部署会弹出授权框，之后重新插拔设备生效。',
     'not plugged in':
         '未插入',
+    'capture retried {n}x: {why}':
+        '采集重试 {n} 次后成功（{why}）',
 }

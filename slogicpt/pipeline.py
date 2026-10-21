@@ -53,10 +53,15 @@ class StepDef:
     abort_on_fail: bool = True  # capture steps keep going to aid diagnosis
 
 
-# Failures that a second attempt usually clears, because the cause is the previous
-# capture's process rather than the board.
+# Host-side failures that a second attempt usually clears, because the cause is
+# the previous capture's process (not yet released the device) rather than the
+# board.  Matched against what sigrok-cli printed.  An analyzer-side fault --
+# the stream never starting ("acquisition stall"), "device STOP failed",
+# "configure failed" -- is NOT here: the analyzer is the product under test,
+# so those fail the step, and the operator can retry it by hand.
 _TRANSIENT = (
     "libusb_error_access",
+    "libusb_error_busy",
     "no devices found",
     "access is denied",
     "resource busy",
@@ -64,9 +69,14 @@ _TRANSIENT = (
 )
 
 
-def _looks_transient(message: str) -> bool:
-    low = message.lower()
-    return any(s in low for s in _TRANSIENT)
+def _transient_reason(e: Exception) -> str:
+    """The sigrok line that marks a capture failure as host-side transient,
+    or "" if it is not one."""
+    for line in (str(e) + "\n" + getattr(e, "output", "")).splitlines():
+        low = line.lower()
+        if any(s in low for s in _TRANSIENT):
+            return line.strip()
+    return ""
 
 
 class PipelineAbort(Exception):
@@ -807,7 +817,8 @@ class Pipeline:
 
     def _capture_retrying(self, cfg, vth, n_samples, out_file, label,
                           attempts: int = 3):
-        """Capture, retrying the failures that are known to be transient.
+        """Capture, retrying automatically only host-side transient failures
+        (see _TRANSIENT); a retry that then succeeds is written to the report.
 
         `LIBUSB_ERROR_ACCESS` / "No devices found" is what the next capture sees
         after a previous sigrok-cli was killed: the old process has not released
@@ -821,22 +832,28 @@ class Pipeline:
         they fail every attempt, and the last error is what gets reported.
         """
         last = None
+        why = ""
         for attempt in range(1, attempts + 1):
             if self.cancel.is_set():
                 return None
             try:
-                return self.sigrok.capture(
+                result = self.sigrok.capture(
                     driver=self.profile.driver, channels=cfg.channels,
                     samplerate_hz=cfg.samplerate_hz, samples=n_samples,
                     voltage_threshold_v=vth, out_file=out_file,
                     timeout_s=self.profile.timeouts.capture_s,
                     log_cb=self._log, cancel=self.cancel)
+                if attempt > 1:
+                    self.report_lines.append(
+                        "   %s — " % label + t("capture retried {n}x: {why}").format(
+                            n=attempt - 1, why=why))
+                return result
             except CaptureError as e:
                 last = e
-                transient = _looks_transient(str(e))
-                if attempt < attempts and transient and not self.cancel.is_set():
+                why = _transient_reason(e)
+                if attempt < attempts and why and not self.cancel.is_set():
                     self._log(t("Capture attempt {a}/{n} failed ({e}); retrying")
-                              .format(a=attempt, n=attempts, e=e))
+                              .format(a=attempt, n=attempts, e=why))
                     self._kill_stray_sigrok()
                     time.sleep(1.5)
                     continue
@@ -990,4 +1007,31 @@ if __name__ == "__main__":
     assert results["ok"] is False and elapsed < 4, elapsed
     assert notes.get("link:replug@5G") == t("Cancelled"), notes
     print(f"  (等待+取消耗时 {elapsed:.1f}s, note={notes['link:replug@5G']!r})")
+    print("== 采集重试：主机侧偶发自动重试，分析仪侧 stall 不重试 ==")
+
+    class FakeSigrok:
+        def __init__(self, failures):
+            self.failures, self.calls = list(failures), 0
+
+        def capture(self, **_kw):
+            self.calls += 1
+            if self.failures:
+                raise CaptureError("sigrok-cli exit code 1", output=self.failures.pop(0))
+            return "result"
+
+    cfg = next(c for e in p32.plan for c in e.configs)
+    pr = Pipeline(p32, FakeSigrok(["No devices found."]), cb, [])
+    pr._kill_stray_sigrok = lambda: None
+    real_sleep, time.sleep = time.sleep, (lambda _s: None)
+    try:
+        got = pr._capture_retrying(cfg, 1.5, "1000", OUTPUT_DIR / "x.bin", "M0 test")
+        assert got == "result" and pr.sigrok.calls == 2, (got, pr.sigrok.calls)
+        assert any("No devices found" in ln for ln in pr.report_lines), pr.report_lines
+        ps = Pipeline(p32, FakeSigrok([
+            "sr: sipeed-slogic-analyzer: USB stream did not start; re-arming.\n"
+            "sr: sipeed-slogic-analyzer: acquisition stall: aborting capture."]), cb, [])
+        assert ps._capture_retrying(cfg, 1.5, "1000", OUTPUT_DIR / "x.bin", "M0") is None
+        assert ps.sigrok.calls == 1 and not ps.report_lines, ps.sigrok.calls
+    finally:
+        time.sleep = real_sleep
     print("pipeline 引擎自测 PASS")
