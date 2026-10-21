@@ -268,20 +268,49 @@ Write-Output '  device tree rescanned'
 # --------------------------------------------------------------------------- #
 def _winusb_service() -> str:
     """Service name bound to MI_00, e.g. 'WinUSB' or 'FTDIBUS'; '' if the
-    device is absent or the query fails.  Needs no elevation (read-only)."""
+    device is absent or the query fails.  Needs no elevation (read-only).
+
+    Read straight from the registry (Enum\\USB\\<hw id>\\<instance>\\Service)
+    with cfgmgr32 telling which instances are plugged in: milliseconds.  It
+    used to ask PowerShell's Get-PnpDevice, which takes seconds to start.
+    When several such devices are present, any one on WinUSB counts."""
+    import ctypes
+    import winreg
     hw = f"USB\\VID_{FTDI_VID.upper()}&PID_{FTDI_PID.upper()}&MI_00"
-    ps = (f"$d = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | "
-          f"Where-Object {{ $_.InstanceId -like '{hw}*' }} | Select-Object -First 1; "
-          f"if ($d) {{ (Get-PnpDeviceProperty -InstanceId $d.InstanceId "
-          f"-KeyName 'DEVPKEY_Device_Service' -ErrorAction SilentlyContinue).Data }}")
     try:
-        p = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-Command", ps], capture_output=True, text=True, timeout=20,
-            **hidden_kwargs())
-    except (OSError, subprocess.SubprocessError):
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                              "SYSTEM\\CurrentControlSet\\Enum\\" + hw)
+    except OSError:
+        return ""                     # never seen on this PC
+    try:
+        cm = ctypes.WinDLL("cfgmgr32")
+        locate = cm.CM_Locate_DevNodeW
+        locate.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_wchar_p,
+                           ctypes.c_uint32]
+        locate.restype = ctypes.c_uint32
+    except (OSError, AttributeError):
         return ""
-    return (p.stdout or "").strip()
+    services: list[str] = []
+    with root:
+        i = 0
+        while True:
+            try:
+                inst = winreg.EnumKey(root, i)
+            except OSError:
+                break
+            i += 1
+            node = ctypes.c_uint32()
+            # CM_LOCATE_DEVNODE_NORMAL (0) finds present devices only
+            if locate(ctypes.byref(node), f"{hw}\\{inst}", 0) != 0:
+                continue
+            try:
+                with winreg.OpenKey(root, inst) as k:
+                    services.append(str(winreg.QueryValueEx(k, "Service")[0]))
+            except OSError:
+                services.append("")
+    if any(sv.lower() == "winusb" for sv in services):
+        return "WinUSB"
+    return services[0] if services else ""
 
 
 def _wait_service(pred, log_cb, *, timeout_s: int) -> bool:
