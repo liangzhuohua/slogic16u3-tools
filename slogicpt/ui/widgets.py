@@ -1,5 +1,5 @@
 """Reusable Material-style widgets: chips, the horizontal stepper, the big
-result card, the bottom drawer and the custom-capture dialog.
+result card, the readiness checklist, the mode matrix and the bottom drawer.
 
 Colours come only from theme tokens; nothing here knows about pipelines or
 profiles -- the window feeds plain data in."""
@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import math
 
-from PyQt5.QtCore import QModelIndex, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QDialog, QFrame, QGridLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton,
-    QSizePolicy, QSplitter, QSplitterHandle, QStackedWidget, QTableWidget,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QSplitter, QSplitterHandle, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from ..i18n import t
@@ -139,10 +137,9 @@ class StepNode(QWidget):
     Clicking it asks for a single-step run when the stepper is interactive."""
 
     clicked = pyqtSignal(str)
-    settings = pyqtSignal(str)
     retry = pyqtSignal(str)
 
-    def __init__(self, number: int, sid: str, name: str, req: str, has_settings: bool):
+    def __init__(self, number: int, sid: str, name: str, req: str):
         super().__init__()
         self.sid = sid
         self.name_text = name
@@ -179,10 +176,6 @@ class StepNode(QWidget):
         self.retry_btn.clicked.connect(lambda: self.retry.emit(self.sid))
         self.retry_btn.hide()
         lay.addWidget(self.retry_btn, 0, Qt.AlignHCenter)
-        if has_settings:
-            self.gear = button(t("Test Params"), "text", "tune", "primary")
-            self.gear.clicked.connect(lambda: self.settings.emit(self.sid))
-            lay.addWidget(self.gear, 0, Qt.AlignHCenter)
         lay.addStretch(1)
 
     def set_status(self, status: StepStatus, duration: float | None):
@@ -241,7 +234,6 @@ class Stepper(QWidget):
     set_status() updates one, show_hint() replaces them with a message."""
 
     run_requested = pyqtSignal(str)
-    settings_requested = pyqtSignal(str)
     retry_requested = pyqtSignal(str)
 
     def __init__(self):
@@ -281,22 +273,21 @@ class Stepper(QWidget):
         lay.addWidget(hint, 1)
         self._spin.stop()
 
-    def set_steps(self, steps: list[tuple[str, str, str, bool]]):
-        """steps: (step_id, name, fixture requirement, has_settings)."""
+    def set_steps(self, steps: list[tuple[str, str, str]]):
+        """steps: (step_id, name, fixture requirement)."""
         lay = self._new_holder()
         if not steps:
             lay.addWidget(label(t("Profile defines no steps"), "secondary"), 1, Qt.AlignCenter)
             return
         prev = None
-        for i, (sid, name, req, has_settings) in enumerate(steps, start=1):
+        for i, (sid, name, req) in enumerate(steps, start=1):
             if prev is not None:
                 c = _Connector()
                 lay.addWidget(c, 1, Qt.AlignTop)
                 c.setFixedHeight(_TOP + _DOT + 8)
                 self._connectors.append((prev, c))
-            node = StepNode(i, sid, name, req, has_settings)
+            node = StepNode(i, sid, name, req)
             node.clicked.connect(self.run_requested)
-            node.settings.connect(self.settings_requested)
             node.retry.connect(self.retry_requested)
             lay.addWidget(node, 2)
             self.nodes[sid] = node
@@ -740,62 +731,3 @@ class Drawer(QFrame):
 
 
 # ------------------------------------------------------------ capture params
-
-class ExpectedTable(QTableWidget):
-    """Edit only on explicit intent: double-click / click-on-selected / F2.
-    A click on the blank area drops the current cell so stray keystrokes
-    can't silently overwrite the last-clicked value."""
-
-    def __init__(self):
-        super().__init__()
-        self.setEditTriggers(QAbstractItemView.DoubleClicked
-                             | QAbstractItemView.SelectedClicked
-                             | QAbstractItemView.EditKeyPressed)
-
-    def mousePressEvent(self, event):
-        if not self.indexAt(event.pos()).isValid():
-            self.clearSelection()
-            self.setCurrentIndex(QModelIndex())
-        super().mousePressEvent(event)
-
-
-class ParamDialog(QDialog):
-    """Custom-capture parameters (engineering), opened from the capture step."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setWindowTitle(t("Test Params"))
-        self.setModal(False)
-        v = QVBoxLayout(self)
-        v.setContentsMargins(20, 20, 20, 20)
-        v.setSpacing(12)
-        g = QGridLayout()
-        g.setHorizontalSpacing(12)
-        g.setVerticalSpacing(8)
-        self.channel_combo = QComboBox()
-        self.rate_combo = QComboBox()
-        self.samples_edit = QLineEdit("1M")
-        self.volt_edit = QLineEdit("1.6")
-        for i, (text, w) in enumerate(((t("Channels:"), self.channel_combo),
-                                       (t("Sample Rate:"), self.rate_combo),
-                                       (t("Samples:"), self.samples_edit),
-                                       (t("Voltage Threshold (V):"), self.volt_edit))):
-            g.addWidget(label(text, "secondary"), i // 2, (i % 2) * 2)
-            g.addWidget(w, i // 2, (i % 2) * 2 + 1)
-        g.setColumnStretch(1, 1)
-        g.setColumnStretch(3, 1)
-        v.addLayout(g)
-        cap = label(t("Per-channel expected values (double-click to edit; "
-                      "sequence steps use profile values):"), "caption")
-        cap.setWordWrap(True)
-        v.addWidget(cap)
-        self.expected_table = ExpectedTable()
-        self.expected_table.setColumnCount(2)
-        self.expected_table.setHorizontalHeaderLabels(["Freq (Hz)", "Duty (%)"])
-        self.expected_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.expected_table.verticalHeader().setDefaultSectionSize(26)
-        self.expected_table.verticalHeader().setFixedWidth(36)
-        v.addWidget(self.expected_table, 1)
-        self.run_btn = button(t("Custom Capture Verify (engineering)"), "filled", "play")
-        v.addWidget(self.run_btn, 0, Qt.AlignRight)
-        self.resize(520, 480)

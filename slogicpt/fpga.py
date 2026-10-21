@@ -241,7 +241,7 @@ class SignalSource:
         self.open()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *_):
         self.close()
         return False
 
@@ -274,21 +274,6 @@ class SignalSource:
             self._mode = mode
             time.sleep(self._settle_s)
             return True
-
-    def restart_pattern(self) -> None:
-        """发 'r' 让当前图案从头开始（帧复位脉冲）。"""
-        with self._lock:
-            if self._ser is None:
-                raise SignalSourceError("signal source is not open")
-            self._write(b"r")
-
-    def invalidate(self) -> None:
-        """忘掉缓存的模式。
-
-        重新烧录 FPGA 之后必须调用 —— FPGA 会回到 M0，而本模块的缓存还是旧的。
-        """
-        with self._lock:
-            self._mode = None
 
     @property
     def mode(self) -> int | None:

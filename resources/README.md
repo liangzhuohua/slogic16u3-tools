@@ -38,9 +38,7 @@ ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigr
 links = ["10G", "5G"]      # 产测逐轮链路：先 10G 全测，提示换插 5G 口后再全测；第一轮是门槛
 
 [signal_source]            # 信号源夹具（Tang Nano 9K），32U3 / 16U3 相同
-type     = "fpga"
-firmware = "../../fixture/testgen.fs"   # 相对本产品目录
-firmware_run = 2           # 载入 SRAM（本次启动首次用到时载入，不应答时重载，约 1.5 s）
+firmware = "../../fixture/testgen.fs"   # 必填，相对本产品目录；本次启动首次用到时载入 SRAM，不应答时重载
 
 [[capture.threshold_groups]]   # 1.8 V 的 bank 3 通道另用 0.9 V 阈值再采一次
 channels = [20, 21, 22, 23, 24, 25]
@@ -97,8 +95,6 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
      也可命令行免点击：
      `bin\openFPGALoader\wdi-simple.exe -v 0x0403 -p 0x6010 -i 0 -t 0 -n "USB Serial Converter A (WinUSB)"`
      需要还原时点同处的「移除」（或用设备管理器删掉该 WinUSB 驱动）；
-  3. openFPGALoader 载入失败时会回退到本机安装的 Gowin `programmer_cli.exe`
-     （默认 `C:\Gowin\...`，或环境变量 `GOWIN_PROGRAMMER_CLI` 指定）。
 
   > openFPGALoader 官方 v1.1.1 GitHub release 只提供 MSYS2 动态包（exe + libftdi1 /
   > libusb-1.0 / zlib1 / libgcc / libstdc++ 共 5~6 个 DLL），**不是单文件**。此处的
@@ -159,7 +155,7 @@ SLogicPT/
 ## 产品档案要点
 
 - `usb.dfu_pid`（16U3=0x30F1、32U3=0x30F2）可选：只用于把"还在 DFU、没烧 app 固件"的板子认出来并提示；应用固件 OTA 由批量网页工具负责；
-- `capture.samplerates` 必须填 sigrok 驱动实际支持的档位（`sigrok-cli -d <driver> --show` 查询），
-  GUI 会再按 `channels × rate / 8 ≤ max_bandwidth_mbps` 过滤展示；
-- `[[capture.tests]]` 是没有 `[[plan]]`（无夹具）的产品逐组执行的测试点（外置固定信号源，目前没有产品在用）；
+- `[signal_source]` 与 `[[plan]]` 必填：每个产品都用夹具图案测试；
+- `capture.samplerates` 必须填 sigrok 驱动实际支持的档位（`sigrok-cli -d <driver> --show` 查询）；
+  `[[plan]]` 里每组配置的采样率必须在这个列表里，且满足 `channels × rate / 8 ≤ max_bandwidth_mbps`，否则启动即报错；
 - `[usb] links` 决定产测轮数与门槛；`[[plan]]` 每组 `configs` 的 `link` 标注它属于哪一轮。

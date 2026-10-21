@@ -8,7 +8,7 @@
 """
 
 ZH: dict[str, str] = {
-    # ---- gui.py ----------------------------------------------------------
+    # ---- ui ---------------------------------------------------------------
     # status glyph labels (STATUS_STYLE)
     "Pending": "待执行",
     "Running…": "执行中…",
@@ -28,15 +28,6 @@ ZH: dict[str, str] = {
     # detail panes (report on top, live log on bottom) + ⚙ capture-params popup
     "Run Log": "运行日志",
     "Clear": "清空",
-    "Channels:": "通道数:",
-    "Sample Rate:": "采样率:",
-    "Samples:": "采样点数:",
-    "Voltage Threshold (V):": "电压阈值(V):",
-    "Custom Capture Verify (engineering)": "自定义采样验证（工程调试）",
-    "Per-channel expected values (double-click to edit; "
-    "sequence steps use profile values):":
-        "每通道期望值（双击修改；序列步骤使用产品档案值）:",
-    "Test Params": "测试参数",
     "Session report (paste directly into feedback):": "本次会话报告（可直接粘贴反馈）:",
     "Copy Report": "复制报告",
     # resource-path overrides + one-time environment setup (under Auxiliary)
@@ -76,8 +67,6 @@ ZH: dict[str, str] = {
     "Not deployed; nothing to remove": "尚未部署，无需移除",
     # language switch / sampling
     "Cannot switch": "无法切换",
-    "Parameter error": "参数错误",
-    "Custom capture: {ch}ch@{rate}": "自定义采样: {ch}ch@{rate}",
     "Stop requested…": "已请求停止…",
     # resource rows / file dialogs
     "Copied": "已复制",
@@ -98,23 +87,13 @@ ZH: dict[str, str] = {
         "如需反馈问题，请复制本报告并附上运行日志相关片段。",
 
     # ---- pipeline.py -----------------------------------------------------
-    "Capture {ch}ch@{rate}": "采样验证 {ch}ch@{rate}",
-    "Custom capture {ch}ch@{rate}": "自定义采样 {ch}ch@{rate}",
     "Unknown step: {step_id}": "未知步骤: {step_id}",
     "Cancelled": "已取消",
     "Step \"{label}\" failed": "步骤「{label}」失败",
     "Flow aborted: {e}": "流程中止: {e}",
     "Flow exception:": "流程异常:",
     "Flow exception, see log for details": "流程异常，详见日志",
-    "== Capture {label} ({samples} samples) ==": "== 采样 {label} ({samples} samples) ==",
-    "Multiple SLogic devices detected online at once; the current sigrok driver "
-    "does not yet support selecting a device, please keep only the device under "
-    "test and retry:":
-        "检测到多台 SLogic 设备同时在线，当前 sigrok 驱动暂不支持指定设备，请只保留被测设备后重试:",
-    "multiple-device ambiguity": "多设备歧义",
     "Capture failed: {e}": "采样失败: {e}",
-    "Capture done: {n} samples, {sec}s -> {file}": "采样完成: {n} samples, {sec}s -> {file}",
-    "{n}/{total} channels passed": "{n}/{total} 通道通过",
 
     # ---- fixture/protocol steps (pipeline._run_mode_config) --------------
     "Applied the profile's signal_source.channel_order permutation to this capture":
@@ -129,7 +108,6 @@ ZH: dict[str, str] = {
     "M{mode} is not ready: {note}": "M{mode} 未就绪: {note}",
     "not ready": "未就绪",
     "Signal generator on {p}, alive, mode 0": "信号发生器在 {p}，存活，模式 0",
-    "Loading fixture: {name} (run {run})": "烧录夹具: {name} (run {run})",
     "== signal generator: {p} patterns pass, {f} fail ==":
         "== 信号发生器: {p} 个模式通过，{f} 个失败 ==",
     "Capture attempt {a}/{n} failed ({e}); retrying":
@@ -157,17 +135,6 @@ ZH: dict[str, str] = {
         "schema_version 应为 {expected}, 实际 {actual!r}",
     "product.id ({pid}) does not match directory name ({dirname})":
         "product.id ({pid}) 与目录名 ({dirname}) 不一致",
-    "channel_options {opts} exceed num_channels={n}":
-        "channel_options {opts} 超出 num_channels={n}",
-    "default_channels={dc} not in channel_options": "default_channels={dc} 不在 channel_options 中",
-    "default_samplerate={sr} is invalid for {dc}ch (not in the list or exceeds bandwidth)":
-        "default_samplerate={sr} 对 {dc}ch 不合法（不在档位或超带宽）",
-    "capture.tests[{i}].channels={ch} exceeds num_channels":
-        "capture.tests[{i}].channels={ch} 超出 num_channels",
-    "capture.tests[{i}].samplerate={sr} not in samplerates list":
-        "capture.tests[{i}].samplerate={sr} 不在 samplerates 列表中",
-    "capture.tests is empty; one-click flow has no test points":
-        "capture.tests 为空，一键流程无测试点",
     "test point {ch}ch@{rate} exceeds bandwidth {bw}MB/s":
         "测试点 {ch}ch@{rate} 超出带宽 {bw}MB/s",
     "missing required field": "缺少必填字段",
@@ -210,24 +177,14 @@ ZH: dict[str, str] = {
     # ---- fixture / signal source / plan (SLogic32U3 handover) ------------
     'Cannot find the fixture: no 0403:6010 device reports a BL702 serial':
         '找不到夹具：没有任何 0403:6010 设备的序列号含 BL702',
-    'openFPGALoader could not load the fixture; falling back to the Gowin programmer':
-        'openFPGALoader 未能烧录夹具，改用 Gowin 编程器',
-    'Gowin programmer_cli not found; cannot load the fixture':
-        '未找到 Gowin programmer_cli，无法烧录夹具',
     'Loading fixture with openFPGALoader: {name} (FTDI serial {s})':
         '用 openFPGALoader 烧录夹具：{name}（FTDI 序列号 {s}）',
     'openFPGALoader reported no success marker (rc={rc})':
         'openFPGALoader 未报告成功标记（rc={rc}）',
     'Fixture bitstream not found: {p}':
         '找不到夹具位流：{p}',
-    'Fixture programming FAILED (exit {rc})':
-        '夹具烧录失败（退出码 {rc}）',
-    'Fixture programming timed out after {s}s':
-        '夹具烧录超时（{s} 秒）',
     'openFPGALoader timed out after {s}s':
         'openFPGALoader 超时（{s} 秒）',
-    'Cannot execute {p}':
-        '无法执行 {p}',
     'none of them reports a serial containing "{h}"':
         '没有一个的序列号含 "{h}"',
     '{n} of them report a serial containing "{h}"':
@@ -244,8 +201,6 @@ ZH: dict[str, str] = {
         '无法打开 {p}：{e}',
     'No confirmation for mode {m} on {p}':
         '{p} 未确认切换到模式 {m}',
-    'signal_source.firmware is not declared':
-        '未声明 signal_source.firmware',
     '== M{mode} {label} ==':
         '== M{mode} {label} ==',
     '-- {label} ({ms} ms window, {n} samples) --':
@@ -260,10 +215,6 @@ ZH: dict[str, str] = {
         'PASS',
     'FAIL':
         'FAIL',
-    'signal_source.type is fpga but no firmware is declared; the fixture cannot be reflashed by the tool':
-        'signal_source.type 为 fpga 但未声明 firmware，工具无法重烧夹具',
-    'signal_source.type {k!r} is not one of fpga/external/none':
-        'signal_source.type {k!r} 不是 fpga/external/none 之一',
     'signal_source.channel_order must be a permutation of 0..{n}':
         'signal_source.channel_order 必须是 0..{n} 的一个排列',
     'plan[{i}] has no usable configs':
@@ -405,6 +356,8 @@ ZH: dict[str, str] = {
     'udev rule missing: deploy it on the Environment Setup page':
         '未部署 udev 规则：到「环境准备」页一键部署',
     'Fixture driver': '夹具驱动',
+    '[[plan]] is empty; there is nothing to test': '[[plan]] 为空，没有可测的内容',
+    'openFPGALoader not found; cannot load the fixture': '找不到 openFPGALoader，无法载入夹具',
     'not WinUSB: deploy it on the Environment Setup page':
         '不是 WinUSB：到「环境准备」页一键部署',
     '{n} connected; keep only the board under test':

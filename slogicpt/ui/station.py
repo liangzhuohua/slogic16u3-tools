@@ -112,12 +112,6 @@ class StationController(QObject):
         shown at all."""
         return self.detected[0].profile if self.detected else None
 
-    def sampling_possible(self) -> bool:
-        p = self.profile
-        return (self.idle and self.sigrok is not None
-                and p is not None
-                and any(d.profile.id == p.id and d.mode == Mode.APP for d in self.detected))
-
     def test_link_ok(self) -> bool:
         d = self.detected
         return (len(d) == 1 and d[0].mode == Mode.APP
@@ -287,14 +281,6 @@ class StationController(QObject):
         self.log.emit("===== " + t("Retry: {label}").format(label=label) + " =====")
         self._start(pl)
 
-    def run_capture(self, **params):
-        """Custom capture (engineering): channels, samplerate_hz, samples,
-        voltage_threshold_v, expected_rows."""
-        if self.profile is None or self.sigrok is None or not self.idle:
-            return
-        self._start(pipeline_mod.Pipeline.capture_only(
-            self.profile, self.sigrok, self._callbacks(), **params))
-
     def _on_pipeline_finished(self, ok: bool, report: str):
         elapsed = time.time() - self._t0 if self._t0 else 0.0
         self.pipeline = None
@@ -322,8 +308,7 @@ class StationController(QObject):
             return
         self.resetting = True
         self.state_changed.emit()
-        ss_cfg = next((p.signal_source for p in self.profiles
-                       if p.signal_source.is_fpga), None)
+        ss_cfg = self.profiles[0].signal_source if self.profiles else None
         self.log.emit("===== " + t("Reset") + " =====")
 
         def worker():

@@ -1,22 +1,12 @@
 """Measurement and checks for captured logic-analyser data.
 
-TWO IDEAS MATTER HERE
----------------------
-1. Frequency is measured from *kept* rising edges, not from every edge in the
-   file. A real capture of a slow square wave carries tens of nanoseconds of
-   ringing on each edge, and a naive "count every 0->1 transition" sees that
-   ringing as extra cycles -- it made M0's 1 kHz channel read as 2 kHz.
+Every channel is measured from its raw edges -- no glitch filtering: a narrow
+pulse on a board output is exactly what a production test has to catch, so the
+judgement never decides it was "only ringing".  Frequency and duty come from
+the per-period values (see measure_channel), and the structured checks (M0
+rotation, SPI/I2C/UART decoding, pulse widths, burst shape) are added on top.
 
-2. The glitch threshold is a fraction of the **median width of the same
-   polarity**, not a fixed number of nanoseconds. A fixed threshold is wrong in
-   both directions: too high and it swallows M5's genuine 74 ns pulses (the duty
-   sweep runs at 421.875 kHz, where a 1/32 duty pulse really is that short); too
-   low and it keeps the ringing. Comparing high pulses against the median high
-   width -- and low pulses against the median low width -- adapts to any pattern.
-
-This mirrors the algorithm in research/vcdstats.py, which was validated against
-the whole 40-cell matrix, but operates on the numpy arrays produced by
-waveform.extract_channels() instead of a VCD text file.
+It works on the numpy arrays produced by waveform.extract_channels().
 """
 from __future__ import annotations
 
@@ -37,30 +27,24 @@ class Measurement:
     duty_pct: float | None = None
     static: int | None = None          # set when fewer than 2 rising edges
     rises: int = 0
-    glitches: int = 0
     first_rise: int | None = None      # sample index of the first kept rising edge
-    period_samples: float | None = None
 
     @property
     def toggling(self) -> bool:
         return self.rises >= 2
 
 
-def measure_channel(samples: np.ndarray, channel: int,
-                    glitch_frac: float = 0.0) -> Measurement:
+def measure_channel(samples: np.ndarray, channel: int) -> Measurement:
     """Measure one channel's 1-D 0/1 array.
 
-    glitch_frac = 0 **默认不滤任何毛刺** —— 产测的职责是把采集到的信号如实读
-    出来。任何"把窄脉冲当振铃丢掉"的处理都可能同时丢掉真实的东西：
+    **不滤任何毛刺** —— 产测的职责是把采集到的信号如实读出来。任何"把窄脉冲当振铃丢掉"的处理都可能同时丢掉真实的东西：
 
       * 被测板输出上的窄毛刺（焊接/器件问题）；
       * 固件产生的伪边沿（比如状态机跑飞、时钟域出问题）。
 
-    这两类正是产测要抓的，所以判定层不再替它们做决定。代价是探头振铃也会被
-    计入读数（实测飞线台架上 M5 的 CH2 会从 100 kHz 读成 27 MHz）—— 那种情况
-    由 evaluate() 标记成"疑似测量问题"，只提示、不改判，让人去查探头。
-
-    需要滤的时候可以显式传 glitch_frac>0（自测就是这么对比两种读法的）。
+    这两类正是产测要抓的，所以判定层不替它们做决定。代价是探头振铃也会被
+    计入读数（实测飞线台架上 M5 的 CH2 会从 100 kHz 读成 27 MHz）—— 那要靠
+    短粗地线、直连主机口解决，而不是在判定里滤掉。
     """
     if samples.size < 2:
         return Measurement(channel, static=int(samples[0]) if samples.size else 0)
@@ -70,62 +54,9 @@ def measure_channel(samples: np.ndarray, channel: int,
     if idx.size == 0:
         return Measurement(channel, static=int(samples[0]))
 
-    if glitch_frac == 0:
-        # Production default.  No segment is shorter than a zero threshold, so
-        # the walk below would keep every transition; take them all at once.
-        level = int(samples[idx[-1]])
-        kept_t = np.concatenate(([0], idx, [samples.size]))
-        kept_lvl = np.concatenate(([samples[0]], samples[idx], [level]))
-        glitches = 0
-    else:
-        # segment boundaries, including the implicit one at t = 0
-        bnd = np.concatenate(([0], idx))
-        lvl = np.concatenate(([samples[0]], samples[idx]))       # level from bnd[i]
-        width = np.diff(bnd).astype(np.float64)                  # width of segment i
-        seg_lvl = lvl[:-1].astype(np.int8)
-
-        highs = width[seg_lvl == 1]
-        lows = width[seg_lvl == 0]
-        hi_thr = float(np.median(highs)) * glitch_frac if highs.size else 0.0
-        lo_thr = float(np.median(lows)) * glitch_frac if lows.size else 0.0
-
-        # Sequential walk: a segment shorter than its polarity's threshold is treated
-        # as ringing and merged into the next one, so it contributes no edge. Doing
-        # this in order (rather than vectorised) is what makes the merge correct.
-        # Collect the KEPT transitions first; the duty calculation needs to know where
-        # the first and last rising edges are, which is only known at the end.
-        kept_t = [0]
-        kept_lvl = [int(samples[0])]
-        glitches = 0
-        level = int(samples[0])
-        start = 0
-        for i in range(idx.size):
-            t = int(idx[i])
-            new = int(samples[t])
-            w = t - start
-            thr = hi_thr if level == 1 else lo_thr
-            # 采集**起点所在的那一段**是被窗口截断的，真实宽度未知，不能拿毛刺阈值
-            # 去判它。否则 M0 会误判：捕获起点必然落在某个通道的电平期间（walking-one
-            # 每步 100us，10ms 窗口里几乎必然如此），于是
-            #   - 起点时正在高电平的那一路：首个高电平被采短 -> 判毛刺丢掉；
-            #   - 起点时是低电平的那一路：首个低电平同样被采短 -> 也丢掉。
-            # 这两路的"首次上升沿"于是整体跳到下一轮，check_order 的轮转序列错位、
-            # 报 FAIL —— 与板子好坏无关，纯粹是采集相位的抽签。
-            # 实测（同一台设备连跑）：修复前 1 通过 / 3 失败，起始通道每次不同
-            # （CH17 / CH20），失败详情形如 "rank 27: got CH13 at 28.00 steps,
-            # expected CH12 at 27"；直接查采集文件可见 CH12 起始电平=1、首个高电平
-            # 只有 976 个采样点（正常 20000）。
-            at_capture_start = (i == 0)
-            if w < thr and not at_capture_start:
-                glitches += 1
-                start = t
-                continue
-            kept_t.append(t)
-            kept_lvl.append(new)
-            level = new
-            start = t
-        kept_t.append(int(samples.size))
-        kept_lvl.append(level)
+    level = int(samples[idx[-1]])
+    kept_t = np.concatenate(([0], idx, [samples.size]))
+    kept_lvl = np.concatenate(([samples[0]], samples[idx], [level]))
 
     # A rising edge is where the level goes 0 -> 1, so `rise_at` indexes the LOW
     # segment that PRECEDES each rise. The edge itself is at kept_t[i + 1]; using
@@ -135,7 +66,7 @@ def measure_channel(samples: np.ndarray, channel: int,
     lv = np.asarray(kept_lvl, dtype=np.int8)
     rise_at = np.flatnonzero((lv[:-1] == 0) & (lv[1:] == 1))
 
-    m = Measurement(channel, rises=int(rise_at.size), glitches=glitches)
+    m = Measurement(channel, rises=int(rise_at.size))
     if rise_at.size >= 2:
         i_first = int(rise_at[0]) + 1
         i_last = int(rise_at[-1]) + 1
@@ -144,26 +75,11 @@ def measure_channel(samples: np.ndarray, channel: int,
         span_t = t_last - t_first
         m.first_rise = t_first
 
-        # Frequency and duty are taken from MEDIANS of the per-period values, not
-        # from the first-to-last span.
-        #
-        # WHY: the span-based form divides by the edge count, so every spurious
-        # edge that survives the glitch filter inflates the frequency while barely
-        # moving the span. Measured on the real fixture, M5's channels read
-        # 1.05-21.4 MHz against a true 421.875 kHz while their duty stayed within
-        # a percent of correct -- the signature of a mean over a count that a few
-        # outliers had doubled.
-        #
-        # A median ignores a minority of corrupt periods, and ringing blips are
-        # always a minority next to real periods. It also removes the need to
-        # trade the glitch threshold against M6's deliberately narrow pulses: a
-        # 74 ns pulse is real and survives, while a 2-sample blip moves neither
-        # median.
+        # frequency from the mean rising-edge period (see _mean_period)
         rise_t = np.asarray(kept_t, dtype=np.int64)[
             np.asarray(rise_at, dtype=np.int64) + 1]
         periods = np.diff(rise_t).astype(np.float64)
         period = _mean_period(periods)
-        m.period_samples = period
 
         # 占空比 = 首末上升沿之间**高电平样本占比**（原始，不取中位数）。
         # 以前取高/低段宽度的中位数 —— 那样少数的异常脉冲会被抹掉，而"少数异常
@@ -189,8 +105,7 @@ def _mean_period(periods: np.ndarray) -> float:
     是产测必须看见的东西。所以改成直接平均：
 
       * 真实的窄脉冲 -> 周期被拉短 -> 频率读数偏高 -> FAIL，看得见；
-      * 探头振铃 -> 同样读数偏高 -> FAIL，但 evaluate() 会额外标记"疑似测量
-        问题"（只提示、不改判），让人去查探头而不是误判成板子坏。
+      * 探头振铃 -> 同样读数偏高 -> FAIL：先查地线和探头，再怀疑板子。
 
     代价：频率对毛刺敏感。实测飞线台架上 M5 的 CH2（真值 100 kHz）会读成
     27 MHz —— 该通道由窄脉冲宽度检查判、不判频率，所以不影响判定；换成同轴探头线（补上
@@ -201,9 +116,9 @@ def _mean_period(periods: np.ndarray) -> float:
     return float(periods.mean())
 
 
-def measure_all(channels: np.ndarray, glitch_frac: float = 0.0) -> list[Measurement]:
+def measure_all(channels: np.ndarray) -> list[Measurement]:
     """Measure every channel of a (n_channels, n_samples) 0/1 array."""
-    return [measure_channel(channels[ch], ch, glitch_frac)
+    return [measure_channel(channels[ch], ch)
             for ch in range(channels.shape[0])]
 
 
@@ -235,10 +150,6 @@ class Verdict:
     # 机器可读的一句话失败原因（"no_edge" / "order" / …）。界面据此写成人话，
     # 不必去解析 detail 里那段给人看会头大的算法内部对比文本。
     reason: str = ""
-    # 只做标记、**不参与判定**：这条失败如果是在"滤掉窄毛刺"的读法下本可通过，
-    # 那它可能是探头振铃/接地不良（测量问题）而不是板子的问题。判定层不替人
-    # 做这个决定，只把事实写在这里，由界面提示"建议查探头/示波器确认"。
-    suspect: str = ""
 
     @property
     def mark(self) -> str:
@@ -625,7 +536,7 @@ def _burst_verdicts(channels: np.ndarray, sample_rate_hz: float) -> list[Verdict
 
 def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
              sample_rate_hz: float, tol_pct: float = 5.0,
-             tol_pp: float = 5.0, glitch_frac: float = 0.0) -> list[Verdict]:
+             tol_pp: float = 5.0) -> list[Verdict]:
     """Measure a capture and check it against the model.
 
     Structured checks are added on top of the per-channel ones. Modes 1..4 are the
@@ -633,12 +544,9 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
     decoder supplies the verdict that actually matters -- whether the known word
     came through. M0 adds a rotation check, because "which channel is high" is the
     whole point of a wiring capture and no single channel can prove it.
-
-    glitch_frac 默认 0：判定基于**原始边沿**，不做任何毛刺滤波（理由见
-    measure_channel 的说明）。下面那段"疑似测量问题"的标注只写 verdict.suspect，
-    **不改变任何 ok 值**。
+    Judged on the raw edges, without any glitch filtering (see measure_channel).
     """
-    ms = measure_all(channels, glitch_frac)
+    ms = measure_all(channels)
     # one entry per channel; None = judged by a structured check below
     per_ch = [check_channel(m, e, tol_pct, tol_pp, sample_rate_hz)
               for m, e in zip(ms, expects)]
@@ -667,26 +575,6 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
                                 r.detail, reason="" if r.ok else "burst_fill")
     verdicts = [v for v in per_ch if v is not None] + structured
 
-    # 只标注、不改判：某条逐通道失败如果换成"滤掉窄毛刺"的读法本可通过，那它
-    # **可能**是探头振铃/接地不良（测量问题）而不是板子的问题。判定层不替人下
-    # 结论，只把这个事实写进 suspect，让界面提示去查探头/用示波器确认。
-    if glitch_frac <= 0.0 and any(v.ok is False and v.channel >= 0 for v in verdicts):
-        try:
-            ms_f = measure_all(channels, 0.1)
-            for v in verdicts:
-                if v.ok or v.channel < 0 or v.channel >= len(ms_f):
-                    continue
-                if v.channel >= len(expects):
-                    continue
-                vf = check_channel(ms_f[v.channel], expects[v.channel],
-                                   tol_pct, tol_pp, sample_rate_hz)
-                if vf is not None and vf.ok:
-                    v.suspect = (
-                        "这条失败是窄毛刺造成的（把窄毛刺滤掉后本可通过）—— "
-                        "可能是探头振铃/接地不良，也可能是板子或固件真的产生了"
-                        "窄脉冲。判定不做让步，建议换标配同轴探头线或用示波器确认")
-        except Exception:                                     # noqa: BLE001
-            pass
     return verdicts
 
 
@@ -736,28 +624,6 @@ def _selftest() -> int:
               % (freq, duty * 100, got, m.duty_pct if m.duty_pct is not None else -1,
                  "ok" if (ok and dok) else "FAIL"))
         fails += 0 if (ok and dok) else 1
-
-    print("== the M5 trap: 74 ns real pulses must NOT be filtered ==")
-    m = measure_channel(make(421875.0, 400_000, 200_000_000, 1 / 32), 0)
-    print("  glitches filtered: %d (must be 0)" % m.glitches)
-    if m.glitches != 0:
-        print("  FAIL: genuine narrow pulses were treated as ringing"); fails += 1
-
-    print("== the M0 trap: 25 ns of ringing must be filtered ==")
-    # 100 kHz at 200 MSa/s over 2 ms -> 200 periods, and 5 samples = 25 ns
-    s = make(100000.0, 400_000, 200_000_000)
-    rises = np.flatnonzero((s[:-1] == 0) & (s[1:] == 1))
-    for k in rises:                       # a short notch + spike after each edge
-        if k + 10 < s.size:
-            s[k + 2:k + 5] = 0
-            s[k + 5] = 1
-    m_raw = measure_channel(s, 0, glitch_frac=0.0)
-    m = measure_channel(s, 0, glitch_frac=0.1)
-    print("  %d rising edges, 25 ns ringing injected on each" % rises.size)
-    print("  no filtering  : %12.1f Hz" % (m_raw.freq_hz * 200_000_000))
-    print("  with filtering: %12.1f Hz  (expect 100000)" % (m.freq_hz * 200_000_000))
-    if abs(m.freq_hz * 200_000_000 - 100000.0) > 200.0:
-        print("  FAIL: ringing not rejected"); fails += 1
 
     print("== static detection ==")
     for lvl in (0, 1):

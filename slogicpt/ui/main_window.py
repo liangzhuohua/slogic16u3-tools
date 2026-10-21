@@ -15,21 +15,18 @@ from PyQt5.QtCore import QSettings, QSize, Qt, QTimer
 from PyQt5.QtGui import QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
     QAction, QActionGroup, QApplication, QFrame, QHBoxLayout,
-    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QTableWidgetItem,
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
     QVBoxLayout, QWidget,
 )
 
 from .. import env_setup
 from ..i18n import LANGS, get_language, set_language, t
 from ..pipeline import StepStatus, sequence_plan
-from ..profiles import (
-    OUTPUT_DIR, ProductProfile, check_resources, format_rate, load_profiles,
-    parse_rate,
-)
+from ..profiles import OUTPUT_DIR, check_resources, load_profiles
 from ..sigrok import SigrokCli, find_sigrok_binary
 from . import icons, report, theme
 from .station import StationController
-from .widgets import (Checklist, Chip, Drawer, GripSplitter, ModeMatrix, ParamDialog,
+from .widgets import (Checklist, Chip, Drawer, GripSplitter, ModeMatrix,
                       ResultCard, Stepper,
                       button, label)
 
@@ -78,7 +75,6 @@ class MainWindow(QMainWindow):
         self._progress = ""                 # latest "what is happening" line
         self._modes: dict[tuple[str, str], tuple[str, str]] = {}  # cell -> (state, why)
         self._session: list[bool] = []      # verdict per board this session (memory only)
-        self._params: ParamDialog | None = None
         self._clock = QTimer(self)
         self._clock.setInterval(1000)
         self._clock.timeout.connect(self._render_result)
@@ -144,7 +140,6 @@ class MainWindow(QMainWindow):
         self.stepper.setMinimumHeight(150)
         self.stepper.run_requested.connect(self._run_single_step)
         self.stepper.retry_requested.connect(self._retry_step)
-        self.stepper.settings_requested.connect(self._open_params)
         sc.addWidget(self.stepper)
         body.addWidget(step_card)
 
@@ -171,16 +166,9 @@ class MainWindow(QMainWindow):
         root.addLayout(body, 1)
         self.setCentralWidget(central)
 
-        if self._params is not None:
-            self._params.deleteLater()
-        self._params = ParamDialog(self)
-        self._params.channel_combo.currentTextChanged.connect(self._on_channels_changed)
-        self._params.run_btn.clicked.connect(self._run_capture)
-
         self._render_problem_chip()
         self._render_stats()
         self._layout_steps(force=True, keep_status=True)
-        self._fill_params(self.ctl.profile)
         self._render_result()
         self._on_devices()
         self._on_state()
@@ -342,14 +330,11 @@ class MainWindow(QMainWindow):
         """Rebuild every widget (new language / theme) and restore the screen."""
         log_text = self.log_box.toPlainText()
         report_text = self.report_box.toPlainText()
-        params_visible = self._params is not None and self._params.isVisible()
         self._build()
         self.log_box.setPlainText(log_text)
         self.log_box.moveCursor(QTextCursor.End)
         self.report_box.setPlainText(report_text)
         self.setWindowTitle(t("SLogic Production Test"))
-        if params_visible:
-            self._open_params()
 
     # ============================================================ rendering
 
@@ -443,8 +428,6 @@ class MainWindow(QMainWindow):
             single, lambda n: t("Single step: {label}").format(label=n.name_text)
             if single else ("" if ctl.profile is not None else
                             t("Connect a board first (click Start to recognise it)")))
-        if self._params is not None:
-            self._params.run_btn.setEnabled(ctl.sampling_possible())
         can_retry = ctl.can_retry()
         for sid, s in self._steps.items():
             self.stepper.set_retry(sid, can_retry and s.status == StepStatus.FAILED)
@@ -469,7 +452,6 @@ class MainWindow(QMainWindow):
         old = self._steps if keep_status else {}
         plan = sequence_plan(shown)
         self._steps = {}
-        has_fixture = shown.signal_source.is_fpga
         self._fixture_need = {}
         rows = []
         for step_id, name in plan:
@@ -477,8 +459,8 @@ class MainWindow(QMainWindow):
             self._steps[step_id] = _Step(name, *(
                 (prev.status, prev.t_start, prev.duration, prev.note, prev.retries)
                 if prev else ()))
-            self._fixture_need[step_id] = self._fixture_need_of(step_id, has_fixture)
-            rows.append((step_id, name, "", step_id.startswith("capture")))
+            self._fixture_need[step_id] = self._fixture_need_of(step_id)
+            rows.append((step_id, name, ""))
         self.stepper.set_steps(rows)
         self._render_fixture_reqs()
         for step_id, s in self._steps.items():
@@ -488,10 +470,8 @@ class MainWindow(QMainWindow):
         self._update_enablement()
 
     @staticmethod
-    def _fixture_need_of(sid: str, has_fixture: bool) -> bool | None:
+    def _fixture_need_of(sid: str) -> bool | None:
         """True when the step needs the fixture (Tang Nano 9K) plugged in."""
-        if not has_fixture:
-            return None
         return True if sid.startswith("signal") else None
 
     def _render_fixture_reqs(self):
@@ -594,10 +574,9 @@ class MainWindow(QMainWindow):
                              .format(n=len(ctl.detected))))
             else:
                 rows.append(("ok" if ctl.test_link_ok() else "bad", t("Analyzer"), what))
-        if any(p.signal_source.is_fpga for p in self.profiles):
-            rows.append(("ok", t("Fixture"), ", ".join(ctl.fixture_port_list))
-                        if ctl.fixture_port_list else
-                        ("bad", t("Fixture"), t("not connected (Tang Nano 9K)")))
+        rows.append(("ok", t("Fixture"), ", ".join(ctl.fixture_port_list))
+                    if ctl.fixture_port_list else
+                    ("bad", t("Fixture"), t("not connected (Tang Nano 9K)")))
         if ctl.sigrok is None:
             rows.append(("bad", "sigrok-cli", t("not found; see resources/README.md")))
         else:
@@ -771,9 +750,8 @@ class MainWindow(QMainWindow):
             self._run_t0 = time.time()
             self._run_detail, self._run_elapsed = "", 0.0
             self._retry_label = ""
-            # a new board: its own steps, all pending; params for its product
+            # a new board: its own steps, all pending
             self._layout_steps(force=True)
-            self._fill_params(self.ctl.profile)
             self._caption = ""
             self._on_devices()
         else:
@@ -861,69 +839,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, restore)
 
     # ------------------------------------------------------ custom capture
-
-    def _open_params(self, _sid: str = ""):
-        self._params.show()
-        self._params.raise_()
-        self._params.activateWindow()
-
-    def _fill_params(self, p: ProductProfile | None):
-        if p is None:
-            return
-        dlg = self._params
-        dlg.channel_combo.blockSignals(True)
-        dlg.channel_combo.clear()
-        dlg.channel_combo.addItems([str(c) for c in p.channel_options])
-        dlg.channel_combo.setCurrentText(str(p.default_channels))
-        dlg.channel_combo.blockSignals(False)
-        dlg.samples_edit.setText(p.default_samples)
-        dlg.volt_edit.setText(f"{p.voltage_threshold_v:g}")
-        self._on_channels_changed(dlg.channel_combo.currentText())
-        default_rate = format_rate(p.default_samplerate_hz)
-        if dlg.rate_combo.findText(default_rate) >= 0:
-            dlg.rate_combo.setCurrentText(default_rate)
-
-    def _on_channels_changed(self, text: str):
-        p = self.ctl.profile
-        if p is None or not text:
-            return
-        dlg = self._params
-        ch = int(text)
-        rates = [format_rate(r) for r in p.legal_rates(ch)]
-        current = dlg.rate_combo.currentText()
-        dlg.rate_combo.clear()
-        dlg.rate_combo.addItems(rates)
-        if current in rates:
-            dlg.rate_combo.setCurrentText(current)
-        else:
-            dlg.rate_combo.setCurrentIndex(dlg.rate_combo.count() - 1)
-        dlg.expected_table.setRowCount(ch)
-        for row in range(ch):
-            dlg.expected_table.setItem(row, 0, QTableWidgetItem(f"{p.expected.freq_hz:.0f}"))
-            dlg.expected_table.setItem(row, 1, QTableWidgetItem(f"{p.expected.duty_pct:g}"))
-
-    def _run_capture(self):
-        p = self.ctl.profile
-        dlg = self._params
-        if p is None:
-            return
-        try:
-            channels = int(dlg.channel_combo.currentText())
-            rate = parse_rate(dlg.rate_combo.currentText())
-            volt = float(dlg.volt_edit.text())
-            samples = dlg.samples_edit.text().strip() or p.default_samples
-            expected_rows = [
-                (float(dlg.expected_table.item(r, 0).text()),
-                 float(dlg.expected_table.item(r, 1).text()))
-                for r in range(channels)]
-        except (TypeError, ValueError, AttributeError) as e:
-            QMessageBox.warning(self, t("Parameter error"), str(e))
-            return
-        self._append_log("===== " + t("Custom capture: {ch}ch@{rate}").format(
-            ch=channels, rate=format_rate(rate)) + " =====")
-        dlg.hide()                    # step aside so the operator sees the result
-        self.ctl.run_capture(channels=channels, samplerate_hz=rate, samples=samples,
-                             voltage_threshold_v=volt, expected_rows=expected_rows)
 
     # ------------------------------------------------- environment setup
 

@@ -77,19 +77,10 @@ def format_rate(hz: int) -> str:
     return str(hz)
 
 
-@dataclass(frozen=True)
-class CaptureTest:
-    channels: int
-    samplerate_hz: int
-    samples: str
-
-
 # =============================================================================
 # Signal source and test plan
 #
-# The original profile drove a single fixed external source (10 MHz 50% TTL) and
-# could only check frequency and duty. The Tang Nano 9K fixture replaces it with
-# ten patterns, which needs two new sections:
+# Every product is tested against the Tang Nano 9K fixture's pattern modes:
 #
 #   [signal_source]   how to reach the generator (serial port, VID/PID, bitstream)
 #   [[plan]]          which modes to run, at which channel counts and rates, and
@@ -104,22 +95,14 @@ class CaptureTest:
 class SignalSource:
     """The fixture that generates the test patterns."""
 
-    kind: str                            # "fpga" | "external" | "none"
     serial: str                          # "auto" or an explicit port name
     vid: int
     pid: int
     baud: int
     settle_ms: int                       # quiet time after a mode change
     reply_timeout_ms: int
-    firmware: Path | None                # Tang Nano bitstream, for the fixture step
-    firmware_run: int                    # Gowin operation index (2 = SRAM Program)
-    firmware_device: str                 # Gowin --device, e.g. GW1NR-9C
-    firmware_cable: str                  # Gowin --cable, e.g. "USB Debugger A"
+    firmware: Path | None                # testgen.fs, loaded into the fixture's SRAM
     channel_order: tuple[int, ...]       # generator channel -> analyser channel
-
-    @property
-    def is_fpga(self) -> bool:
-        return self.kind == "fpga"
 
 
 @dataclass(frozen=True)
@@ -144,7 +127,6 @@ class PlanConfig:
 
     channels: int
     samplerate_hz: int
-    samples: str
     window_ms: float                     # capture length, chosen per mode
     max_samples: int                     # cap, so a high rate cannot explode
     # the test-station pass this config belongs to (libusb speed code, e.g. 5 =
@@ -163,14 +145,6 @@ class PlanEntry:
     note: str
     checks: tuple[str, ...]
     configs: tuple[PlanConfig, ...]
-
-
-@dataclass(frozen=True)
-class ExpectedSignal:
-    freq_hz: float
-    duty_pct: float
-    freq_tol_pct: float
-    duty_tol_pp: float
 
 
 @dataclass(frozen=True)
@@ -199,15 +173,9 @@ class ProductProfile:
     driver: str
     num_channels: int                   # device total channels -> unitsize = ceil(n/8)
     max_bandwidth_mbps: int
-    channel_options: list[int]
     samplerates_hz: list[int]
     voltage_threshold_v: float
-    default_samples: str
-    default_channels: int
-    default_samplerate_hz: int
-    capture_tests: list[CaptureTest]
-    expected: ExpectedSignal
-    signal_source: SignalSource          # Tang Nano fixture, or an inert source
+    signal_source: SignalSource          # the Tang Nano 9K fixture
     plan: list[PlanEntry]                # modes x configs, with their check sets
     threshold_groups: list[ThresholdGroup]   # channels needing another threshold
     product_dir: Path                   # resources/products/<id>/（固件等资源按此解析）
@@ -226,35 +194,13 @@ class ProductProfile:
     def unitsize(self) -> int:
         return (self.num_channels + 7) // 8
 
-    def legal_rates(self, channels: int) -> list[int]:
-        """Samplerates satisfying channels*rate/8 <= max_bandwidth."""
-        limit = self.max_bandwidth_mbps * 1_000_000
-        return [r for r in self.samplerates_hz if channels * r // 8 <= limit]
-
 
 def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
                          problems: list, pid_for_log: str) -> SignalSource:
-    """Parse [signal_source]. Absent section -> an inert "none" source."""
-    raw = doc.get("signal_source")
-    if not raw:
-        # A product without a fixture has no signal_source; it is tested by its
-        # [[capture.tests]] against an external fixed source instead.
-        return SignalSource(kind="none", serial="auto", vid=0x0403, pid=0x6010,
-                            baud=115200, settle_ms=400, reply_timeout_ms=1000,
-                            firmware=None, firmware_run=2,
-                            firmware_device="GW1NR-9C",
-                            firmware_cable="USB Debugger A",
-                            channel_order=tuple(range(num_channels)))
-
-    kind = str(raw.get("type", "none")).lower()
-    if kind not in ("fpga", "external", "none"):
-        problems.append(Problem("error", pid_for_log,
-                                t("signal_source.type {k!r} is not one of "
-                                  "fpga/external/none").format(k=kind)))
-        kind = "none"
-
-    fw_rel = raw.get("firmware")
-    firmware = (product_dir / str(fw_rel)).resolve() if fw_rel else None
+    """Parse [signal_source] (required: every product is tested against the
+    fixture)."""
+    raw = doc["signal_source"]
+    firmware = (product_dir / str(raw["firmware"])).resolve()
 
     order_raw = raw.get("channel_order")
     if order_raw is None:
@@ -269,7 +215,6 @@ def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
             order = tuple(range(num_channels))
 
     return SignalSource(
-        kind=kind,
         serial=str(raw.get("serial", "auto")),
         vid=int(raw.get("vid", 0x0403)),
         pid=int(raw.get("pid", 0x6010)),
@@ -277,27 +222,19 @@ def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
         settle_ms=int(raw.get("settle_ms", 400)),
         reply_timeout_ms=int(raw.get("reply_timeout_ms", 1000)),
         firmware=firmware,
-        firmware_run=int(raw.get("firmware_run", 2)),
-        firmware_device=str(raw.get("firmware_device", "GW1NR-9C")),
-        firmware_cable=str(raw.get("firmware_cable", "USB Debugger A")),
         channel_order=order,
     )
 
 
 def _parse_links(usb: dict) -> tuple[int, ...]:
-    """[usb] links = ["10G", "5G"] (ordered passes); the older single
-    min_link = "10G" still reads as one pass."""
-    raw = usb.get("links")
-    if raw is None:
-        raw = [usb["min_link"]] if usb.get("min_link") else []
-    return tuple(parse_link(x) for x in raw)
+    """[usb] links = ["10G", "5G"]: the ordered link passes."""
+    return tuple(parse_link(x) for x in usb.get("links", []))
 
 
 def _parse_plan(doc: dict, num_channels: int, samplerates_hz: list[int],
-                capture: dict, problems: list, pid_for_log: str) -> list[PlanEntry]:
-    """Parse [[plan]]. Falls back to wrapping any legacy [[capture.tests]]."""
+                max_bw: int, problems: list, pid_for_log: str) -> list[PlanEntry]:
+    """Parse [[plan]]."""
     entries: list[PlanEntry] = []
-    default_samples = str(capture.get("default_samples", "1M"))
 
     for i, raw in enumerate(doc.get("plan", [])):
         mode = int(raw.get("mode", i))
@@ -317,10 +254,15 @@ def _parse_plan(doc: dict, num_channels: int, samplerates_hz: list[int],
                     t("plan[{i}].configs[{j}].samplerate={sr} not in the samplerates "
                       "list").format(i=i, j=j, sr=c["samplerate"])))
                 continue
+            if ch * rate // 8 > max_bw * 1_000_000:
+                problems.append(Problem(
+                    "error", pid_for_log,
+                    t("test point {ch}ch@{rate} exceeds bandwidth {bw}MB/s").format(
+                        ch=ch, rate=format_rate(rate), bw=max_bw)))
+                continue
             configs.append(PlanConfig(
                 channels=ch,
                 samplerate_hz=rate,
-                samples=str(c.get("samples", default_samples)),
                 window_ms=float(c.get("window_ms", 20.0)),
                 max_samples=int(c.get("max_samples", 8_000_000)),
                 link=parse_link(c["link"]) if c.get("link") else None,
@@ -338,17 +280,8 @@ def _parse_plan(doc: dict, num_channels: int, samplerates_hz: list[int],
         ))
 
     if not entries:
-        # No [[plan]]: keep the legacy shape usable by treating every
-        # [[capture.tests]] entry as a config of a single "no mode" plan entry.
-        legacy = [PlanConfig(int(c["channels"]), parse_rate(c["samplerate"]),
-                             str(c.get("samples", default_samples)), 20.0,
-                             8_000_000)
-                  for c in capture.get("tests", [])]
-        if legacy:
-            entries.append(PlanEntry(mode=-1, label="legacy capture",
-                                     ready=True, note="",
-                                     checks=("freq", "duty"),
-                                     configs=tuple(legacy)))
+        problems.append(Problem("error", pid_for_log,
+                                t("[[plan]] is empty; there is nothing to test")))
     return entries
 
 
@@ -391,7 +324,6 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         product = doc["product"]
         usb = doc["usb"]
         capture = doc["capture"]
-        expected = doc.get("expected", {})
 
         prod_id = str(product["id"])
         if prod_id != product_dir.name:
@@ -403,44 +335,8 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         dfu_pid = usb.get("dfu_pid")
 
         num_channels = int(capture["num_channels"])
-        channel_options = [int(c) for c in capture["channel_options"]]
-        if any(c <= 0 or c > num_channels for c in channel_options):
-            return err(t("channel_options {opts} exceed num_channels={n}").format(
-                opts=channel_options, n=num_channels))
-
         samplerates_hz = sorted(parse_rate(r) for r in capture["samplerates"])
-
-        default_channels = int(capture.get("default_channels", channel_options[-1]))
-        if default_channels not in channel_options:
-            return err(t("default_channels={dc} not in channel_options").format(dc=default_channels))
-        limit = int(capture["max_bandwidth_mbps"]) * 1_000_000
-        legal_defaults = [r for r in samplerates_hz
-                          if default_channels * r // 8 <= limit]
-        default_samplerate_hz = parse_rate(
-            capture.get("default_samplerate", legal_defaults[-1] if legal_defaults else samplerates_hz[0]))
-        if default_samplerate_hz not in legal_defaults:
-            return err(t("default_samplerate={sr} is invalid for {dc}ch (not in the list or exceeds bandwidth)").format(
-                sr=capture.get('default_samplerate'), dc=default_channels))
-
-        tests = []
-        for i, ct in enumerate(doc["capture"].get("tests", [])):
-            ch = int(ct["channels"])
-            rate = parse_rate(ct["samplerate"])
-            if ch > num_channels:
-                return err(t("capture.tests[{i}].channels={ch} exceeds num_channels").format(i=i, ch=ch))
-            if rate not in samplerates_hz:
-                return err(t("capture.tests[{i}].samplerate={sr} not in samplerates list").format(
-                    i=i, sr=ct['samplerate']))
-            tests.append(CaptureTest(ch, rate, str(ct.get("samples", capture.get("default_samples", "1M")))))
-        if not tests and not doc.get("plan"):
-            problems.append(Problem("warning", prod_id,
-                                    t("capture.tests is empty; one-click flow has no test points")))
-
         max_bw = int(capture["max_bandwidth_mbps"])
-        for ct in tests:
-            if ct.channels * ct.samplerate_hz // 8 > max_bw * 1_000_000:
-                return err(t("test point {ch}ch@{rate} exceeds bandwidth {bw}MB/s").format(
-                    ch=ct.channels, rate=format_rate(ct.samplerate_hz), bw=max_bw))
 
         tmo = doc.get("timeouts", {})
         timeouts = Timeouts(
@@ -450,15 +346,10 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         default_vth = float(capture.get("voltage_threshold_v", 1.6))
         signal_source = _parse_signal_source(doc, product_dir, num_channels,
                                              problems, prod_id)
-        plan = _parse_plan(doc, num_channels, samplerates_hz, capture,
+        plan = _parse_plan(doc, num_channels, samplerates_hz, max_bw,
                            problems, prod_id)
         threshold_groups = _parse_threshold_groups(doc, num_channels, default_vth,
                                                    problems, prod_id)
-        if plan and signal_source.is_fpga and signal_source.firmware is None:
-            problems.append(Problem(
-                "warning", prod_id,
-                t("signal_source.type is fpga but no firmware is declared; the "
-                  "fixture cannot be reflashed by the tool")))
 
         profile = ProductProfile(
             id=prod_id,
@@ -470,41 +361,23 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
             driver=str(capture["driver"]),
             num_channels=num_channels,
             max_bandwidth_mbps=max_bw,
-            channel_options=channel_options,
             samplerates_hz=samplerates_hz,
             voltage_threshold_v=default_vth,
-            default_samples=str(capture.get("default_samples", "1M")),
-            default_channels=default_channels,
-            default_samplerate_hz=default_samplerate_hz,
-            capture_tests=tests,
             signal_source=signal_source,
             plan=plan,
             threshold_groups=threshold_groups,
-            expected=ExpectedSignal(
-                # Optional now: a fixture-based product gets its expectations from
-                # patterns.py, so [expected] only carries the tolerances and the
-                # freq/duty pair is left at zero. Legacy profiles that still drive
-                # a single external source keep declaring them as before.
-                freq_hz=float(expected.get("freq_hz", 0.0)),
-                duty_pct=float(expected.get("duty_pct", 0.0)),
-                freq_tol_pct=float(expected.get("freq_tol_pct", 5.0)),
-                duty_tol_pp=float(expected.get("duty_tol_pp", 5.0)),
-            ),
             product_dir=product_dir,
             timeouts=timeouts,
         )
         # every link pass needs a config for every ready mode, or that pass would
         # silently test less than the others
-        if signal_source.is_fpga:
-            for link in profile.links:
-                for e in plan:
-                    if e.ready and e.mode >= 0 and not any(
-                            c.link in (None, link) for c in e.configs):
-                        problems.append(Problem(
-                            "error", prod_id,
-                            t("plan M{mode} has no config for the {link} pass").format(
-                                mode=e.mode,
-                                link=link_name(link))))
+        for link in profile.links:
+            for e in plan:
+                if e.ready and not any(c.link in (None, link) for c in e.configs):
+                    problems.append(Problem(
+                        "error", prod_id,
+                        t("plan M{mode} has no config for the {link} pass").format(
+                            mode=e.mode, link=link_name(link))))
         return profile, problems
     except (KeyError, ValueError, TypeError) as e:
         kind = t("missing required field") if isinstance(e, KeyError) else t("invalid field")
@@ -572,11 +445,9 @@ if __name__ == "__main__":
         print(f"  USB: {p.vid:#06x} app={p.app_pid:#06x} dfu={dfu}")
         print(f"  {p.num_channels}ch, {p.max_bandwidth_mbps}MB/s, unitsize={p.unitsize}")
         print(f"  采样率: {', '.join(format_rate(r) for r in p.samplerates_hz)}")
-        for ch in p.channel_options:
-            print(f"  {ch:>2}ch 合法档位: {', '.join(format_rate(r) for r in p.legal_rates(ch))}")
-        print(f"  测试点: {', '.join(f'{t.channels}ch@{format_rate(t.samplerate_hz)}' for t in p.capture_tests)}")
-        print(f"  期望: {p.expected.freq_hz/1e6:g}MHz ±{p.expected.freq_tol_pct}%, "
-              f"{p.expected.duty_pct}% ±{p.expected.duty_tol_pp}pp")
+        print(f"  夹具位流: {p.signal_source.firmware}")
+        print(f"  计划: {' '.join(f'M{e.mode}' for e in p.plan)}  链路: "
+              f"{', '.join(link_name(k) for k in p.links) or '-'}")
     print(f"\n== {len(problems)} 个问题 ==")
     for prob in problems:
         print(f"  {prob}")

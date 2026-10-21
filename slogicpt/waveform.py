@@ -1,4 +1,4 @@
-"""Waveform unpacking and PWM verification, generic over channel count.
+"""Waveform unpacking, generic over channel count.
 
 Data format: sigrok-cli `-O binary` output.  Each sample is `unitsize`
 bytes little-endian, where unitsize = ceil(device_total_channels / 8) --
@@ -6,14 +6,9 @@ the device's native width, regardless of how many channels were enabled
 for the capture (verified empirically on SLogic16U3: 8-channel capture
 still yields 2 bytes/sample).  The stream may carry textual
 `FRAME-BEGIN\\n` / `FRAME-END\\n` markers which must be stripped.
-
-The legacy slogic_cli 4-channel nibble-packed format is NOT supported
-here (slogic_cli was removed; its sources live in git history if an old
-archive ever needs parsing).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -83,97 +78,35 @@ def apply_channel_order(channels: np.ndarray,
     return channels[np.asarray(order[:channels.shape[0]], dtype=int)]
 
 
-def detect_pwm_freq(samples: np.ndarray, sample_rate: float) -> float | None:
-    edges = np.where((samples[:-1] == 0) & (samples[1:] == 1))[0]
-    if len(edges) < 2:
-        return None
-    avg_period = np.diff(edges).mean()
-    if avg_period == 0:
-        return None
-    return sample_rate / avg_period
-
-
-def check_pwm_duty(samples: np.ndarray) -> float | None:
-    edges = np.where((samples[:-1] == 0) & (samples[1:] == 1))[0]
-    if len(edges) < 2:
-        return None
-    span = samples[edges[0]:edges[-1]]
-    if len(span) == 0:
-        return None
-    return float(np.count_nonzero(span)) / len(span)
-
-
-@dataclass(frozen=True)
-class ChannelVerdict:
-    channel: int
-    freq_hz: float | None
-    duty: float | None
-    freq_ok: bool
-    duty_ok: bool
-
-    @property
-    def ok(self) -> bool:
-        return self.freq_ok and self.duty_ok
-
-
-def verify_channels(channels: np.ndarray, sample_rate: float,
-                    expected_freq_hz: float, expected_duty_pct: float,
-                    freq_tol_pct: float, duty_tol_pp: float,
-                    max_samples: int = 200_000) -> tuple[bool, list[ChannelVerdict]]:
-    """Verify each channel carries the expected PWM signal."""
-    verdicts: list[ChannelVerdict] = []
-    for ch in range(channels.shape[0]):
-        samples = channels[ch, :max_samples]
-        freq = detect_pwm_freq(samples, sample_rate)
-        duty = check_pwm_duty(samples)
-        freq_ok = freq is not None and abs(freq - expected_freq_hz) <= expected_freq_hz * freq_tol_pct / 100.0
-        duty_ok = duty is not None and abs(duty * 100.0 - expected_duty_pct) <= duty_tol_pp
-        verdicts.append(ChannelVerdict(ch, freq, duty, freq_ok, duty_ok))
-    return all(v.ok for v in verdicts), verdicts
-
-
 def _selftest() -> int:
-    print("== waveform 自测：合成 10MHz/50% 方波 ==")
-    sample_rate = 200_000_000
-    n = 100_000
-    t = np.arange(n)
-    square = ((t // 10) % 2 == 0).astype(np.uint8)   # 10 samples high, 10 low @200M -> 10MHz 50%
+    print("== waveform 自测：合成方波打包后逐通道拆回 ==")
+    n = 10_000
+    rng = np.random.default_rng(1)
     failures = 0
     for num_ch, unitsize in ((4, 1), (8, 1), (16, 2), (32, 4)):
+        bits = rng.integers(0, 2, size=(num_ch, n), dtype=np.uint8)
         words = np.zeros(n, dtype=np.uint64)
         for ch in range(num_ch):
-            words |= square.astype(np.uint64) << ch
-        packed = words.astype(f"<u{max(unitsize, 1)}").tobytes()[:n * unitsize]
-        chans = extract_channels(packed, num_ch, unitsize)
-        ok, verdicts = verify_channels(chans, sample_rate, 10e6, 50.0, 5.0, 5.0)
-        v0 = verdicts[0]
-        print(f"  {num_ch:>2}ch unitsize={unitsize}: {'PASS' if ok else 'FAIL'} "
-              f"(ch0: {v0.freq_hz/1e6:.4f}MHz {v0.duty*100:.2f}%)")
+            words |= bits[ch].astype(np.uint64) << np.uint64(ch)
+        packed = words.astype(f"<u{unitsize}").tobytes()
+        ok = np.array_equal(extract_channels(packed, num_ch, unitsize), bits)
+        print(f"  {num_ch:>2}ch unitsize={unitsize}: {'PASS' if ok else 'FAIL'}")
         failures += 0 if ok else 1
-    # marker stripping
+        # an 8-channel capture of a 32-channel device still has unitsize 4
+        if unitsize == 4:
+            ok = np.array_equal(extract_channels(packed, 8, 4), bits[:8])
+            print(f"   8ch of unitsize=4: {'PASS' if ok else 'FAIL'}")
+            failures += 0 if ok else 1
     stripped = strip_frame_markers(b"FRAME-BEGIN\n" + b"\x01\x02" + b"FRAME-END\n")
-    assert stripped == b"\x01\x02", stripped
-    print("  FRAME 标记剥离: PASS")
-    # wrong expectation must FAIL
-    ch16 = extract_channels(np.repeat(square, 1).astype("<u2").tobytes(), 16, 2)
-    ok, _ = verify_channels(ch16[:1], sample_rate, 20e6, 50.0, 5.0, 5.0)
-    print(f"  错误期望(20MHz)应 FAIL: {'PASS' if not ok else 'FAIL'}")
-    failures += 0 if not ok else 1
-
-    legacy = REGRESSION_FILE
-    if legacy.is_file():
-        print(f"== 回归: {legacy.name} (16ch@200M, 旧 slogic_cli 格式与 sigrok 16ch 格式一致) ==")
-        chans = extract_channels(legacy.read_bytes(), 16, 2)
-        ok, verdicts = verify_channels(chans, 200e6, 10e6, 50.0, 5.0, 8.0)
-        for v in verdicts[:4]:
-            f = f"{v.freq_hz/1e6:.4f}MHz" if v.freq_hz else "N/A"
-            d = f"{v.duty*100:.2f}%" if v.duty is not None else "N/A"
-            print(f"  CH{v.channel}: {f} {d} {'ok' if v.ok else 'X'}")
-        print(f"  overall: {'PASS' if ok else 'FAIL'}")
+    ok = stripped == b"\x01\x02"
+    print(f"  FRAME 标记剥离: {'PASS' if ok else 'FAIL'}")
+    failures += 0 if ok else 1
+    chans = np.arange(4)[:, None] * np.ones((1, 3), dtype=int)
+    ok = apply_channel_order(chans, [2, 0, 3, 1])[:, 0].tolist() == [2, 0, 3, 1]
+    print(f"  通道置换: {'PASS' if ok else 'FAIL'}")
+    failures += 0 if ok else 1
     return failures
 
-
-REGRESSION_FILE = Path(__file__).resolve().parents[1] / "out" / "16ch_200M_wave.bin"  # optional local capture
 
 if __name__ == "__main__":
     import sys

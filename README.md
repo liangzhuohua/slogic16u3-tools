@@ -13,7 +13,7 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 
 本工具只负责③产测。点 **开始** 即"布防"：每接入一块被测板，
 工具自动识别产品并跑完全部步骤；结论以大卡片显示在窗口中央，直到下一块板接入。点 **停止** 撤防（运行中则取消）。
-撤防时把鼠标移到步骤条上的某一步、点击即可对最近识别的板单步执行；采样步骤下方的「测试参数」打开自定义采集（工程用）。
+撤防时把鼠标移到步骤条上的某一步、点击即可对最近识别的板单步执行。
 
 界面：顶栏（语言 / 主题 / 复位 / 开始·停止）→ 产品与设备状态（含本次启动以来的通过/失败计数）→ 横向步骤条
 → 中央结论区 → 底部可展开的「报告 / 运行日志 / 环境准备」。中央结论区按状态显示：
@@ -58,7 +58,6 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   │   └── icons.py     #     内嵌 SVG 图标
 │   ├── procutil.py      #   跨平台子进程：隐藏窗口、杀进程树、超时/取消运行器
 │   ├── env_setup.py     #   「环境准备」一键部署：Linux udev 规则 / Windows 夹具 FTDI 的 WinUSB 驱动
-│   ├── winexec.py       #   Windows：把 Gowin programmer_cli 托管到服务进程运行（打包版的兼容处理）
 │   ├── i18n.py, _translations.py  # 中英界面文案
 │   ├── pipeline.py      #   流程引擎：步骤表、链路门槛、采集瞬时错误重试、超时/人工提示
 │   ├── profiles.py      #   产品档案加载/校验/资源自检
@@ -69,7 +68,7 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── fixture.py       #   夹具（Tang Nano 9K）位流载入 SRAM（本次启动首次用到时 / 不应答时）
 │   ├── fpga.py          #   夹具串口：切模式、存活检查
 │   ├── sigrok.py        #   sigrok-cli 采样封装（logic_channels 分组、回卷检测）
-│   └── waveform.py      #   波形拆包（任意通道数）与 PWM 验证
+│   └── waveform.py      #   波形拆包（任意通道数）与接线置换
 ├── resources/           # 管理员资源：产品档案 / 夹具位流 / sigrok-cli（见其 README）
 ├── out/                 # 运行时采样输出（自动创建，不入库）
 ├── build.py             # PyInstaller 单二进制打包
@@ -106,7 +105,7 @@ python -m slogicpt.deep_checks   # SPI/I2C/UART 解码、突发包络自测
 python -m slogicpt.waveform      # 波形拆包自测
 python -m slogicpt.fpga          # 找到夹具串口并切换模式（需接夹具）
 python -m slogicpt.fixture       # 夹具载入自测
-python -m slogicpt.sigrok        # 查找 sigrok-cli 并扫描分析仪（需真机）
+python -m slogicpt.sigrok        # 查找 sigrok-cli、扫描并试采一次（需真机）
 ```
 
 ## 打包分发

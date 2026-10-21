@@ -32,16 +32,14 @@ links = ["10G", "5G"]
 # 时按这对 ID 自动找口（Linux 上 BL702 露出两个 ttyUSB，取接口 1 的 UART）；
 # 夹具没插时图案测试一步提示插上并等待；载入后仍不应答则该步判 FAIL。
 #
-# firmware_run = 2 是 Gowin 的 "SRAM Program"：工具用 openFPGALoader 把位流载入
-# 夹具 SRAM（不带 -f），约 1.5 s。不写 Flash：片上 Flash 用 openFPGALoader 写
-# 报 "CRC check : FAIL"、写后不启动；外部 Flash 用 programmer_cli 报 "spi flash
-# not found"。SRAM 掉电即失，所以工具在本次启动首次用到夹具时载入一次，之后换板
+# firmware 由 openFPGALoader 载入夹具 SRAM，约 1.5 s。不写 Flash：片上 Flash 用
+# openFPGALoader 写报 "CRC check : FAIL"、写后不启动；外部 Flash 用 programmer_cli
+# 报 "spi flash not found"。SRAM 掉电即失，所以工具在本次启动首次用到夹具时载入一次，之后换板
 # 不再载入；夹具不应答（例如被拔插、掉过电）时自动重新载入。
 #
 # ⚠️ 不要在产测台架上做 JTAG 烧录：Gowin 编程器的 JTAG 操作会干扰夹具 FPGA
 #    的 SRAM 配置。
 [signal_source]
-type             = "fpga"
 serial           = "auto"
 vid              = 0x0403
 pid              = 0x6010
@@ -49,7 +47,6 @@ baud             = 115200
 settle_ms        = 400      # 切模式后的稳定延时
 reply_timeout_ms = 1000     # 等 "MODE n" 回复的超时
 firmware         = "../../fixture/testgen.fs"   # 夹具位流，各产品共用（入库）
-firmware_run     = 2        # 2 = SRAM Program（4 = 带校验）
 
 # 接线置换：channel_order[g] = 发生器 CH g 实际到达的分析仪输入。
 #
@@ -57,7 +54,7 @@ firmware_run     = 2        # 2 = SRAM Program（4 = 带校验）
 # 两组八根飞线互换，由 M4 的逐实例 SPI 字判定出来），修线之后恢复直连。
 #
 # 如果哪天又出现错位，用这个流程重新确定：
-#   1. python research/map_check.py    看轮转顺序是不是整齐的整数偏移
+#   1. 跑一次 M0，看报告里轮转顺序是不是整齐的整数偏移
 #   2. 跑一次 M4，看每个 spiN 解出的字属于哪个实例 —— 字是每实例唯一的，
 #      所以 D 组解出谁的字，就说明那组线接的是谁
 #   3. 按结果填这张表
@@ -72,13 +69,9 @@ channel_order    = [0, 1, 2, 3, 4, 5, 6, 7,
 driver              = "sipeed-slogic-analyzer"
 num_channels        = 32
 max_bandwidth_mbps  = 800
-channel_options     = [4, 8, 16, 32]
 samplerates         = ["10M", "20M", "25M", "40M", "50M", "80M", "100M",
                        "160M", "200M", "400M", "800M", "1400M"]
 voltage_threshold_v = 1.5
-default_samples     = "1M"
-default_channels    = 32
-default_samplerate  = "200M"
 
 # ---------------------------------------------------------------------------
 # 双阈值：1.8 V 的 bank 3 通道
@@ -96,10 +89,6 @@ default_samplerate  = "200M"
 label               = "bank 3 (1.8 V, PSRAM-locked)"
 channels            = [20, 21, 22, 23, 24, 25]
 voltage_threshold_v = 0.9
-
-[expected]
-freq_tol_pct = 5.0
-duty_tol_pp  = 5.0
 
 [timeouts]
 capture_s = 120

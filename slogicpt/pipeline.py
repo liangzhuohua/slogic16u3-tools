@@ -19,7 +19,6 @@ from enum import Enum
 from typing import Callable
 
 from . import device_watch
-from . import waveform
 from .i18n import t
 from .procutil import kill_image
 from .profiles import OUTPUT_DIR, ProductProfile, format_rate
@@ -121,22 +120,12 @@ def _sequence_spec(profile: ProductProfile
             spec.append((f"link:replug{sfx}",
                          t("Re-plug into a {link} port").format(link=name),
                          "_await_link", (link,), True))
-        if profile.signal_source.is_fpga:
-            # the pattern step brings the fixture up itself (fixture.ensure_running:
-            # SRAM loaded once per session, again only if it stops answering)
-            if profile.plan:
-                spec.append((f"signal:all{sfx}",
-                             t("Signal generator · all {n} patterns").format(
-                                 n=len(profile.plan)) + (f" ({name})" if link else ""),
-                             "_run_all_modes", (link,), False))
-        elif n == 0:
-            # Legacy path: a profile with no [[plan]] drives an external fixed
-            # source; it is not link-specific, so it runs once.
-            for i, ct in enumerate(profile.capture_tests):
-                spec.append((f"capture:{i}",
-                             t("Capture {ch}ch@{rate}").format(
-                                 ch=ct.channels, rate=format_rate(ct.samplerate_hz)),
-                             "_capture_test", (i,), False))
+        # the pattern step brings the fixture up itself (fixture.ensure_running:
+        # SRAM loaded once per session, again only if it stops answering)
+        spec.append((f"signal:all{sfx}",
+                     t("Signal generator · all {n} patterns").format(
+                         n=len(profile.plan)) + (f" ({name})" if link else ""),
+                     "_run_all_modes", (link,), False))
     return spec
 
 
@@ -163,10 +152,6 @@ class Pipeline:
         self.app_serial: str | None = None   # APP USB SerialNumber (version id)
         # (mode label, channel text, check, measured, expected, passing channels)
         self.failures: list[tuple[str, str, str, str, str, str]] = []
-        # 结构化结果（每个「模式 x 配置」一条），供**独立的测试工具**直接渲染界面。
-        # 纯附加：产测引擎自己不读它，行为完全不变。有它就不必去解析 report_lines
-        # 里那些本地化文案（"M4 32ch@200M: PASS (32 ok / 0 fail)"）。
-        self.mode_results: list[dict] = []
 
     # ---- construction helpers -------------------------------------------
 
@@ -175,11 +160,6 @@ class Pipeline:
                         (lambda m=getattr(self, meth), a=args: m(*a)),
                         abort_on_fail=abort)
                 for sid, label, meth, args, abort in _sequence_spec(self.profile)]
-
-    def _capture_test(self, i: int) -> bool:
-        ct = self.profile.capture_tests[i]
-        return self._capture_one(ct.channels, ct.samplerate_hz, ct.samples,
-                                 self.profile.voltage_threshold_v, None)
 
     @classmethod
     def for_board(cls, profile: ProductProfile,
@@ -204,22 +184,6 @@ class Pipeline:
         if not matches:
             raise ValueError(t("Unknown step: {step_id}").format(step_id=step_id))
         p.steps = matches
-        return p
-
-    @classmethod
-    def capture_only(cls, profile: ProductProfile, sigrok: SigrokCli,
-                     callbacks: PipelineCallbacks, *,
-                     channels: int, samplerate_hz: int, samples: str,
-                     voltage_threshold_v: float,
-                     expected_rows: list[tuple[float, float]] | None = None
-                     ) -> "Pipeline":
-        """Custom capture+verify with operator-tweaked parameters."""
-        p = cls(profile, sigrok, callbacks, [])
-        label = t("Custom capture {ch}ch@{rate}").format(
-            ch=channels, rate=format_rate(samplerate_hz))
-        p.steps = [StepDef("capture:custom", label, lambda: p._capture_one(
-            channels, samplerate_hz, samples, voltage_threshold_v, expected_rows),
-            abort_on_fail=False)]
         return p
 
     # ---- lifecycle -------------------------------------------------------
@@ -334,24 +298,6 @@ class Pipeline:
     def _log(self, msg: str) -> None:
         self.cb.on_log(msg)
 
-    def _note_mode_result(self, entry, *, config: str = "-", ok: bool = True,
-                          passed: int = 0, failed: int = 0,
-                          verdicts=None, note: str = "") -> None:
-        """追加一条结构化结果到 `mode_results`（供独立测试工具渲染界面）。
-
-        纯附加信息：产测引擎自己不读它，行为与判定完全不变。
-        """
-        self.mode_results.append({
-            "mode": entry.mode,
-            "mode_label": entry.label,
-            "config": config,
-            "ok": bool(ok),
-            "passed": passed,
-            "failed": failed,
-            "verdicts": list(verdicts or []),
-            "note": note,
-        })
-
     _all_profiles = None        # every product profile (link:check sees all analyzers)
     _link = None                # link of the current test pass (picks the plan configs)
 
@@ -397,7 +343,7 @@ class Pipeline:
     def _check_link(self, link: int | None) -> bool:
         """Link gate: exactly one analyzer on the host, it is THIS
         product running its app firmware, and its USB link reached the
-        product's minimum ([usb] min_link, e.g. 10G).  Fails -- and aborts the
+        product's minimum (the first of [usb] links, e.g. 10G).  Fails -- and aborts the
         run -- otherwise, so a slow link is never "tested".
 
         Exactly one, because sigrok-cli cannot choose between several SLogic
@@ -487,85 +433,6 @@ class Pipeline:
                 from .profiles import parse_link
                 return parse_link(m.group(1))
         return None
-
-    def _capture_one(self, channels: int, samplerate_hz: int, samples: str,
-                     voltage_threshold_v: float,
-                     expected_rows: list[tuple[float, float]] | None) -> bool:
-        assert self.sigrok is not None
-        label = f"{channels}ch@{format_rate(samplerate_hz)}"
-        out_file = OUTPUT_DIR / f"{self.profile.id}_{channels}ch_{format_rate(samplerate_hz)}_wave.bin"
-        self._log(t("== Capture {label} ({samples} samples) ==").format(
-            label=label, samples=samples))
-        # sigrok-cli refuses to capture when its scan matches several
-        # devices, and this driver build does not implement the `conn`
-        # selector yet ("Not supported now!") -- so detect the ambiguity
-        # up front and tell the operator exactly what to do.
-        found = self.sigrok.scan(self.profile.driver)
-        if len(found) > 1:
-            msg = (t("Multiple SLogic devices detected online at once; the current "
-                     "sigrok driver does not yet support selecting a device, please "
-                     "keep only the device under test and retry:")
-                   + "\n  " + "\n  ".join(found))
-            self._log(msg)
-            self.report_lines.append(
-                f"{label}: FAIL (" + t("multiple-device ambiguity") + ")")
-            return False
-        try:
-            result = self.sigrok.capture(
-                driver=self.profile.driver, channels=channels,
-                samplerate_hz=samplerate_hz, samples=samples,
-                voltage_threshold_v=voltage_threshold_v, out_file=out_file,
-                timeout_s=self.profile.timeouts.capture_s,
-                log_cb=self._log, cancel=self.cancel)
-        except CaptureError as e:
-            self._log(t("Capture failed: {e}").format(e=e))
-            self.report_lines.append(
-                f"{label}: FAIL (" + t("Capture failed: {e}").format(e=e) + ")")
-            return False
-
-        self._log(t("Capture done: {n} samples, {sec}s -> {file}").format(
-            n=result.n_samples, sec=f"{result.elapsed_s:.2f}",
-            file=result.out_file.name))
-        chans = waveform.load_capture_file(result.out_file, channels, result.unitsize)
-        e = self.profile.expected
-        if expected_rows is None:
-            ok, verdicts = waveform.verify_channels(
-                chans, samplerate_hz, e.freq_hz, e.duty_pct,
-                e.freq_tol_pct, e.duty_tol_pp)
-            exp_per_ch = [(e.freq_hz, e.duty_pct)] * len(verdicts)
-        else:
-            verdicts = []
-            for ch in range(channels):
-                exp_f, exp_d = expected_rows[ch]
-                _, v = waveform.verify_channels(
-                    chans[ch:ch + 1], samplerate_hz, exp_f, exp_d,
-                    e.freq_tol_pct, e.duty_tol_pp)
-                verdicts.append(waveform.ChannelVerdict(
-                    ch, v[0].freq_hz, v[0].duty, v[0].freq_ok, v[0].duty_ok))
-            exp_per_ch = [expected_rows[ch] for ch in range(channels)]
-            ok = all(v.ok for v in verdicts)
-        # 判据：每通道 freq 在 ±freq_tol_pct%、duty 在 ±duty_tol_pp 之内即过；
-        # 逐通道打出 实测 vs 期望 + freq/duty 各自过没过，便于分辨误判/超差。
-        self._log(f"[criteria] verify: freq within +/-{e.freq_tol_pct}% of "
-                  f"expected, duty within +/-{e.duty_tol_pp}pp of expected")
-        for i, (v, (exp_f, exp_d)) in enumerate(zip(verdicts, exp_per_ch)):
-            f = f"{v.freq_hz / 1e6:.4f}MHz" if v.freq_hz else "N/A"
-            d = f"{v.duty * 100:.2f}%" if v.duty is not None else "N/A"
-            fv = "ok  " if v.freq_ok else "FAIL"
-            dv = "ok  " if v.duty_ok else "FAIL"
-            # Dxx 补零两位（冒号对齐）+ 各列定宽，便于肉眼比对实测 vs 期望
-            self._log(
-                f"  D{v.channel:02d}: freq={f:>11}[exp {exp_f / 1e6:8.4f}MHz {fv}]  "
-                f"duty={d:>7}[exp {exp_d:5.1f}% {dv}]  -> "
-                f"{'ok' if v.ok else '** FAIL **'}")
-            # 每 8 通道插一条横线分割，便于分组观察（最后一组末尾不加）
-            if (i + 1) % 8 == 0 and (i + 1) < len(verdicts):
-                self._log("  " + "-" * 74)
-        self.report_lines.append(
-            f"{label}: {'PASS' if ok else 'FAIL'} ("
-            + t("{n}/{total} channels passed").format(
-                n=sum(v.ok for v in verdicts), total=len(verdicts)) + ")")
-        return ok
 
     # =======================================================================
     # Fixture signal source (Tang Nano 9K)
@@ -660,8 +527,6 @@ class Pipeline:
             self.report_lines.append(
                 "M%d %s: FAIL (%s)" % (entry.mode, entry.label,
                                        entry.note or t("not ready")))
-            self._note_mode_result(entry, ok=False, failed=1,
-                                   note=entry.note or t("not ready"))
             return False                      # a planned mode that cannot run is a fail
 
         try:
@@ -671,8 +536,6 @@ class Pipeline:
             self.report_lines.append(
                 "M%d %s: FAIL (%s)" % (entry.mode, entry.label,
                                        t("no signal generator")))
-            self._note_mode_result(entry, ok=False, failed=1,
-                                   note=t("no signal generator"))
             return False
 
         try:
@@ -681,8 +544,6 @@ class Pipeline:
             self._log(t("Mode {m} not confirmed: {e}").format(m=entry.mode, e=e))
             self.report_lines.append(
                 "M%d %s: FAIL (%s)" % (entry.mode, entry.label, t("mode not confirmed")))
-            self._note_mode_result(entry, ok=False, failed=1,
-                                   note=t("mode not confirmed"))
             return False
 
         self._log(t("== M{mode} {label} ==").format(mode=entry.mode, label=entry.label))
@@ -691,7 +552,6 @@ class Pipeline:
             # a pass that silently tests less is exactly what must not happen
             why = t("no config for the {link} pass").format(link=_link_name(self._link))
             self.report_lines.append("M%d %s: FAIL (%s)" % (entry.mode, entry.label, why))
-            self._note_mode_result(entry, ok=False, failed=1, note=why)
             return False
         all_ok = True
         for cfg in configs:
@@ -791,8 +651,6 @@ class Pipeline:
         final = ([v for _c, v in sorted(verdicts_by_channel.items())]
                  + list(extra.values()))
         good, passed, failed = checks.summarise(final)
-        self._note_mode_result(entry, config=label, ok=good, passed=passed,
-                               failed=failed, verdicts=final)
         by_ch = {v.channel: v for v in final}
         for v in final:
             if not v.ok:
@@ -940,9 +798,8 @@ if __name__ == "__main__":
         assert ids and ids[0].startswith("link:check"), ids
         # one pattern run per link pass, later passes start
         # with a re-plug step
-        if prof.signal_source.is_fpga and prof.plan:
-            assert sum(i.startswith("signal:all") for i in ids) == max(1, len(prof.links)), ids
-            assert sum(i.startswith("link:replug") for i in ids) == max(0, len(prof.links) - 1), ids
+        assert sum(i.startswith("signal:all") for i in ids) == max(1, len(prof.links)), ids
+        assert sum(i.startswith("link:replug") for i in ids) == max(0, len(prof.links) - 1), ids
         # the GUI list and the executed steps come from one table
         assert ids == [d.id for d in Pipeline(prof, None, cb, [])._sequence_defs()]
 
