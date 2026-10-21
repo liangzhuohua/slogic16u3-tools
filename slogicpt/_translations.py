@@ -368,4 +368,12 @@ ZH: dict[str, str] = {
         '未部署 udev 规则：到「环境准备」页一键部署',
     '{n} connected; keep only the board under test':
         '连了 {n} 台，只保留被测板',
+    'Reset':
+        '复位',
+    'Clear the result and reset the bench: the fixture back to M0, devices rescanned':
+        '清空结果并复位台架：夹具切回 M0，重新扫描设备',
+    'Fixture on {p} answered, back in M0':
+        '夹具（{p}）应答正常，已切回 M0',
+    'Fixture reset failed: {e}':
+        '夹具复位失败：{e}',
 }

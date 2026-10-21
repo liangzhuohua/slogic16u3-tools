@@ -42,6 +42,7 @@ class StationController(QObject):
     notice = pyqtSignal(str)                     # armed but cannot start (why)
     board_removed = pyqtSignal()
     env_done = pyqtSignal(bool, str)             # ok, action
+    reset_done = pyqtSignal()
     _pl_finished = pyqtSignal(bool, str)
 
     def __init__(self, profiles: list[ProductProfile], sigrok, parent=None):
@@ -54,6 +55,7 @@ class StationController(QObject):
         self.fixture_present = False
         self.fixture_port_list: list[str] = []
         self.sigrok_version = ""                 # filled in by a background probe
+        self.resetting = False                   # hardware reset in progress
         if sigrok is not None:
             threading.Thread(target=self._probe_sigrok, daemon=True).start()
         self.profile: ProductProfile | None = None   # last recognised board
@@ -61,6 +63,7 @@ class StationController(QObject):
         self.arm_state = "idle"
         self._t0: float | None = None
         self._pl_finished.connect(self._on_pipeline_finished)
+        self.reset_done.connect(self._on_reset_done)
 
         self._device_timer = QTimer(self)
         self._device_timer.timeout.connect(self.refresh_devices)
@@ -77,8 +80,14 @@ class StationController(QObject):
     # ------------------------------------------------------------- queries
 
     @property
-    def busy(self) -> bool:
+    def running(self) -> bool:
+        """A pipeline (test run, retry, single step) is running."""
         return self.pipeline is not None and self.pipeline.running
+
+    @property
+    def busy(self) -> bool:
+        """Running, or resetting the hardware: nothing new may start."""
+        return self.running or self.resetting
 
     @property
     def idle(self) -> bool:
@@ -239,6 +248,52 @@ class StationController(QObject):
             # the verdict stays up until the next board arrives
             self.arm_state = "wait_remove"
         self.run_finished.emit(ok, report, elapsed)
+        self.state_changed.emit()
+
+    # ------------------------------------------------------------- reset
+
+    def reset_hardware(self):
+        """Operator Reset: put the bench back in a known state, off the UI
+        thread -- any stray sigrok-cli killed (Windows), the fixture reopened
+        and back in M0, then the devices rescanned.  Each outcome goes to the
+        log; reset_done fires at the end.  Armed or not stays as it was; a
+        board still plugged in is not started (the arm state is left waiting
+        for its removal).
+
+        The analyzer is deliberately NOT given a USB port reset: tried on the
+        bench (SLogic32U3 on a 10G link), it dropped off the bus and did not
+        come back until it was replugged."""
+        if self.busy:
+            return
+        self.resetting = True
+        self.state_changed.emit()
+        ss_cfg = next((p.signal_source for p in self.profiles
+                       if p.signal_source.is_fpga), None)
+        self.log.emit("===== " + t("Reset") + " =====")
+
+        def worker():
+            from ..procutil import kill_image
+            kill_image("sigrok-cli-windows-x86_64.exe", "sigrok-cli.exe")
+            if ss_cfg is not None:
+                try:
+                    src = fpga.SignalSource(
+                        port=None if ss_cfg.serial == "auto" else ss_cfg.serial,
+                        baud=ss_cfg.baud, settle_ms=ss_cfg.settle_ms,
+                        reply_timeout_ms=ss_cfg.reply_timeout_ms)
+                    src.open()                     # alive check, back to M0
+                    port = src.port
+                    src.close()
+                    self.log.emit("[reset] " + t("Fixture on {p} answered, back in M0")
+                                  .format(p=port))
+                except Exception as e:             # noqa: BLE001
+                    self.log.emit("[reset] " + t("Fixture reset failed: {e}").format(e=e))
+            self.reset_done.emit()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_reset_done(self):
+        self.resetting = False
+        self.refresh_devices()
         self.state_changed.emit()
 
     # --------------------------------------------------- environment prep

@@ -228,6 +228,11 @@ class MainWindow(QMainWindow):
         h.addWidget(th)
         h.addSpacing(4)
 
+        self.reset_btn = button(t("Reset"), "tonal", "refresh",
+                                tip=t("Clear the result and reset the bench: the "
+                                      "fixture back to M0, devices rescanned"))
+        self.reset_btn.clicked.connect(self._on_reset)
+        h.addWidget(self.reset_btn)
         self.action_btn = button("", "filled")
         self.action_btn.setMinimumWidth(112)
         self.action_btn.clicked.connect(self._on_action)
@@ -399,7 +404,7 @@ class MainWindow(QMainWindow):
 
     def _on_state(self):
         ctl = self.ctl
-        if ctl.busy or ctl.armed:
+        if ctl.running or ctl.armed:
             self.action_btn.setText(t("Stop"))
             self.action_btn.setIcon(icons.icon("stop", "on_error", 20))
             theme.set_prop(self.action_btn, "variant", "danger")
@@ -429,6 +434,9 @@ class MainWindow(QMainWindow):
                   "automatically"))
         else:
             self.action_btn.setEnabled(True)
+        if ctl.resetting:
+            self.action_btn.setEnabled(False)
+        self.reset_btn.setEnabled(not ctl.busy)
         single = ctl.idle and ctl.profile is not None and not missing
         self.stepper.set_interactive(
             single, lambda n: t("Single step: {label}").format(label=n.name_text)
@@ -643,7 +651,8 @@ class MainWindow(QMainWindow):
         elif kind == "ready":
             self.result_card.set_state(
                 "ready", t("Waiting for the board under test…"),
-                t("Armed: every board connected is tested automatically"), icon="usb")
+                t("Armed: every board connected is tested automatically"),
+                caption=caption, icon="usb")
         elif kind == "running":
             elapsed = time.time() - self._run_t0 if self._run_t0 else 0.0
             order = list(self._steps)
@@ -709,6 +718,23 @@ class MainWindow(QMainWindow):
     def _run_single_step(self, sid: str):
         s = self._steps.get(sid)
         self.ctl.run_single_step(sid, s.label if s else sid)
+
+    def _on_reset(self):
+        """Clear everything this board left on screen, then reset the
+        hardware in the background.  An armed station stays armed; a board
+        still plugged in is not retested until it has been removed."""
+        ctl = self.ctl
+        if ctl.busy:
+            return
+        self._modes.clear()
+        self._progress = self._board_sn = self._run_detail = self._retry_label = ""
+        self._run_elapsed, self._run_t0, self._run_kind = 0.0, 0.0, ""
+        self.report_box.clear()
+        ctl.profile = None
+        self._layout_steps(force=True)        # fresh, all pending
+        self._caption = "remove" if ctl.armed and ctl.arm_state == "wait_remove" else ""
+        self._show_result("ready" if ctl.armed else "idle")
+        ctl.reset_hardware()
 
     def _retry_step(self, sid: str):
         """Operator pressed Retry under a failed step: rerun it, then the
