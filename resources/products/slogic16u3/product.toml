@@ -29,8 +29,6 @@ pid              = 0x6010
 baud             = 115200
 settle_ms        = 400      # 切模式后的稳定延时
 reply_timeout_ms = 1000     # 等 "MODE n" 回复的超时
-firmware         = "../../fixture/testgen.fs"   # 夹具位流，各产品共用（入库）
-firmware_run     = 2        # 2 = SRAM Program
 
 [capture]
 driver = "sipeed-slogic-analyzer"   # sigrok 驱动名

@@ -15,19 +15,12 @@ One place for the things each tool wrapper used to re-implement:
   Windows locale is GBK, and one stray byte would otherwise raise mid-run).
 - kill_tree() / kill_pid_tree():  kill a child and everything it spawned.
 - kill_image():     Windows `taskkill /IM`; a no-op elsewhere.
-- run_to_file():    run a tool with its output going to a temp FILE, never a
-  pipe, with a timeout and cancel: a pipe nobody drains can block the child
-  forever, and some tools print progress bars that fill a pipe quickly.
 """
 from __future__ import annotations
 
 import os
 import subprocess
 import sys
-import tempfile
-import threading
-import time
-from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
@@ -118,37 +111,3 @@ def kill_image(*names: str) -> None:
                            capture_output=True, **hidden_kwargs())
         except OSError:
             pass
-
-
-def run_to_file(argv: list[str], timeout_s: float,
-                cancel: threading.Event | None = None,
-                cwd: str | None = None) -> tuple[int | None, str, str | None]:
-    """Run `argv` with stdout+stderr captured to a temp file.
-
-    Returns (returncode, output, failure) where failure is None on a normal
-    exit, "timeout", "cancel" or "launch: <error>"; returncode is None unless
-    the process exited by itself."""
-    with tempfile.TemporaryDirectory(prefix="slogic_run_") as tmp:
-        logfile = Path(tmp) / "out.log"
-        with open(logfile, "wb") as lf:
-            try:
-                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf,
-                                        stderr=subprocess.STDOUT, cwd=cwd,
-                                        **{k: v for k, v in popen_kwargs().items()
-                                           if k not in ("encoding", "errors")})
-            except OSError as e:
-                return None, "", "launch: %s" % e
-            deadline = time.time() + timeout_s
-            failure = None
-            while proc.poll() is None:
-                if cancel is not None and cancel.is_set():
-                    failure = "cancel"
-                elif time.time() > deadline:
-                    failure = "timeout"
-                if failure:
-                    kill_tree(proc)
-                    proc.wait()
-                    break
-                time.sleep(0.05)
-        out = logfile.read_bytes().decode("utf-8", "replace")
-    return (None if failure else proc.returncode), out, failure

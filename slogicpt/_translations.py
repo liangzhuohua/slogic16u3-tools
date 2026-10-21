@@ -130,12 +130,7 @@ ZH: dict[str, str] = {
     "mode not confirmed": "模式未确认",
     "M{mode} is not ready: {note}": "M{mode} 未就绪: {note}",
     "not ready": "未就绪",
-    "no serial port after flashing": "烧录后没有串口",
     "Signal generator on {p}, alive, mode 0": "信号发生器在 {p}，存活，模式 0",
-    "Loading fixture: {name} (run {run})": "烧录夹具: {name} (run {run})",
-    "Fixture flash FAILED":
-        "夹具烧录失败",
-    "no firmware declared": "未声明固件",
     "== signal generator: {p} patterns pass, {f} fail ==":
         "== 信号发生器: {p} 个模式通过，{f} 个失败 ==",
     "Capture attempt {a}/{n} failed ({e}); retrying":
@@ -153,9 +148,6 @@ ZH: dict[str, str] = {
         "请【插上】信号发生器夹具（Tang Nano 9K）的 USB，然后等待 —— 流程会自动继续",
     "Fixture detected ({p}), continuing": "已检测到夹具（{p}），继续",
     "still waiting ({s}s): {m}": "仍在等待（{s} 秒）：{m}",
-
-    # ---- fixture.py ------------------------------------------------------
-    "Launch failed: {e}": "启动失败: {e}",
 
     # ---- profiles.py (self-check Problem messages) -----------------------
     "profile parse failed: {e}": "档案解析失败: {e}",
@@ -201,39 +193,8 @@ ZH: dict[str, str] = {
 
     # ---- env_setup.py (title/hint only; deploy log stays English) --------
     "Linux device permissions (udev)": "Linux 设备权限 (udev)",
-    "Windows driver (WinUSB)": "Windows 驱动 (WinUSB)",
-    "Install a udev rule for SLogic (359F) and the FTDI cable (0403:6010) for "
-    "root-free access; deploying pops up an authorization dialog, then replug "
-    "the device to take effect.":
-        "为 SLogic(359F) 与 FTDI 线缆(0403:6010) 安装 udev 规则，免 root 访问；"
-        "部署会弹出授权框，之后重新插拔设备生效。",
-    "Bind the fixture's FTDI A-channel (0403:6010 interface 0) to WinUSB, which "
-    "openFPGALoader needs to load the fixture; deploying pops up a UAC "
-    "authorization dialog.":
-        "将夹具 FTDI A 通道(0403:6010 接口0)绑定到 WinUSB，openFPGALoader 载入夹具所需；"
-        "部署会弹出 UAC 授权框。",
 
     # ---- fixture / signal source / plan (SLogic32U3 handover) ------------
-    'Cannot find the fixture: no 0403:6010 device reports a BL702 serial':
-        '找不到夹具：没有任何 0403:6010 设备的序列号含 BL702',
-    'openFPGALoader could not load the fixture; falling back to the Gowin programmer':
-        'openFPGALoader 未能烧录夹具，改用 Gowin 编程器',
-    'Gowin programmer_cli not found; cannot load the fixture':
-        '未找到 Gowin programmer_cli，无法烧录夹具',
-    'Loading fixture with openFPGALoader: {name} (FTDI serial {s})':
-        '用 openFPGALoader 烧录夹具：{name}（FTDI 序列号 {s}）',
-    'openFPGALoader reported no success marker (rc={rc})':
-        'openFPGALoader 未报告成功标记（rc={rc}）',
-    'Fixture bitstream not found: {p}':
-        '找不到夹具位流：{p}',
-    'Fixture programming FAILED (exit {rc})':
-        '夹具烧录失败（退出码 {rc}）',
-    'Fixture programming timed out after {s}s':
-        '夹具烧录超时（{s} 秒）',
-    'openFPGALoader timed out after {s}s':
-        'openFPGALoader 超时（{s} 秒）',
-    'Cannot execute {p}':
-        '无法执行 {p}',
     'none of them reports a serial containing "{h}"':
         '没有一个的序列号含 "{h}"',
     '{n} of them report a serial containing "{h}"':
@@ -250,26 +211,18 @@ ZH: dict[str, str] = {
         '无法打开 {p}：{e}',
     'No confirmation for mode {m} on {p}':
         '{p} 未确认切换到模式 {m}',
-    'signal_source.firmware is not declared':
-        '未声明 signal_source.firmware',
     '== M{mode} {label} ==':
         '== M{mode} {label} ==',
     '-- {label} ({ms} ms window, {n} samples) --':
         '-- {label}（窗口 {ms} ms，{n} 个采样点）--',
     '   {label}: {verdict}  ({p} ok / {f} fail)':
         '   {label}: {verdict}  （{p} 通过 / {f} 失败）',
-    'could not load the signal generator':
-        '信号发生器烧录失败',
-    'Signal generator not reachable after flashing: {e}':
-        '烧录后信号发生器无法连通：{e}',
     'capture failed':
         '采集失败',
     'PASS':
         'PASS',
     'FAIL':
         'FAIL',
-    'signal_source.type is fpga but no firmware is declared; the fixture cannot be reflashed by the tool':
-        'signal_source.type 为 fpga 但未声明 firmware，工具无法重烧夹具',
     'signal_source.type {k!r} is not one of fpga/external/none':
         'signal_source.type {k!r} 不是 fpga/external/none 之一',
     'signal_source.channel_order must be a permutation of 0..{n}':
@@ -318,8 +271,6 @@ ZH: dict[str, str] = {
         '{name} 处于 DFU 模式：应用固件尚未烧录',
     'unknown link {name!r} (expected one of {opts})':
         '未知链路 {name!r}（应为 {opts} 之一）',
-    'Fixture · flash signal generator':
-        '夹具 · 烧录信号发生器',
     'Check USB link':
         '检查 USB 链路',
 
@@ -363,4 +314,9 @@ ZH: dict[str, str] = {
         '深色',
     'Armed':
         '已布防',
+    # ---- pre-flashed fixture (v0.4.3) ---------------------------------------
+    'Install a udev rule for SLogic (359F) for root-free access; deploying pops up an authorization dialog, then replug the device to take effect.':
+        '为 SLogic(359F) 安装 udev 规则，免 root 访问；部署会弹出授权框，之后重新插拔设备生效。',
+    'not plugged in':
+        '未插入',
 }

@@ -30,17 +30,10 @@ links = ["10G", "5G"]
 # ---------------------------------------------------------------------------
 # BL702 桥的 VID:PID（pyserial 报十进制，这里是十六进制）。serial = "auto"
 # 时按这对 ID 自动找口（Linux 上 BL702 露出两个 ttyUSB，取接口 1 的 UART）；
-# 找不到夹具时「烧录信号发生器」一步判 FAIL，整板结论随之 FAIL。
+# 夹具没插时提示插上并等待；插上后串口不应答，图案测试一步判 FAIL。
 #
-# firmware_run = 2 是 Gowin 的 "SRAM Program"：工具用 openFPGALoader 把位流载入
-# 夹具 SRAM（不带 -f），约 1.5 s；只有 5/6（片上 Flash）才写 Flash。不用外部
-# Flash 是因为 programmer_cli 的所有 exFlash 操作都报 "spi flash not found"
-# （详见项目文档 production_test_plan.md 的 R1）。SRAM 每轮重载，
-# 好处是夹具状态每次都确定 —— FPGA 会因拔插探针线的小掉电丢失配置，
-# 丢后引脚全部悬空、分析仪全通道读高。
-#
-# ⚠️ 不要在产测台架上做 JTAG 烧录：Gowin 编程器的 JTAG 操作会干扰夹具 FPGA
-#    的 SRAM 配置。
+# 夹具的图案设计（resources/fixture/testgen.fs）事先烧在夹具的片上 Flash 里，
+# 上电即运行，工具不再烧录夹具。给新夹具烧录一次见 resources/README.md。
 [signal_source]
 type             = "fpga"
 serial           = "auto"
@@ -49,8 +42,6 @@ pid              = 0x6010
 baud             = 115200
 settle_ms        = 400      # 切模式后的稳定延时
 reply_timeout_ms = 1000     # 等 "MODE n" 回复的超时
-firmware         = "../../fixture/testgen.fs"   # 夹具位流，各产品共用（入库）
-firmware_run     = 2        # 2 = SRAM Program（4 = 带校验）
 
 # 接线置换：channel_order[g] = 发生器 CH g 实际到达的分析仪输入。
 #
