@@ -43,7 +43,9 @@ class StationController(QObject):
     board_removed = pyqtSignal()
     env_done = pyqtSignal(bool, str)             # ok, action
     reset_done = pyqtSignal()
+    env_status_changed = pyqtSignal()            # env_status updated
     _pl_finished = pyqtSignal(bool, str)
+    _scanned = pyqtSignal(bool, object, object)  # backend ok, fixture ports, devices
 
     def __init__(self, profiles: list[ProductProfile], sigrok, parent=None):
         super().__init__(parent)
@@ -56,6 +58,11 @@ class StationController(QObject):
         self.fixture_port_list: list[str] = []
         self.sigrok_version = ""                 # filled in by a background probe
         self.resetting = False                   # hardware reset in progress
+        # udev rule / WinUSB binding: 'deployed' | 'absent' | 'unknown'.  Read
+        # off the GUI thread (Windows asks PowerShell, which takes seconds)
+        self.env_status = "unknown"
+        self._scanning = False                   # a device poll is in flight
+        self._scan_again = False                 # ...and another was asked for
         if sigrok is not None:
             threading.Thread(target=self._probe_sigrok, daemon=True).start()
         self.profile: ProductProfile | None = None   # last recognised board
@@ -64,6 +71,8 @@ class StationController(QObject):
         self._t0: float | None = None
         self._pl_finished.connect(self._on_pipeline_finished)
         self.reset_done.connect(self._on_reset_done)
+        self._scanned.connect(self._apply_scan)
+        self.refresh_env_status()
 
         self._device_timer = QTimer(self)
         self._device_timer.timeout.connect(self.refresh_devices)
@@ -155,15 +164,60 @@ class StationController(QObject):
     # ------------------------------------------------------------- polling
 
     def refresh_devices(self):
-        """Poll the USB analyzers.  This also drives the armed state machine
-        (a new board starts a run, its removal re-arms)."""
-        self.backend_ok = device_watch.backend_ok()
-        self.fixture_port_list = fpga.fixture_ports()
-        self.fixture_present = bool(self.fixture_port_list)
-        self.detected = device_watch.scan_devices(self.profiles) if self.backend_ok else []
+        """Poll the USB analyzers and the fixture.  The scan runs on a worker
+        thread -- it repeats every 1.5 s, and pyusb plus the serial-port
+        enumeration are slow enough on Windows to stall the window -- and its
+        result is applied on the GUI thread (_apply_scan), which also drives
+        the armed state machine (a new board starts a run, its removal
+        re-arms)."""
+        if self._scanning:
+            self._scan_again = True
+            return
+        self._scanning = True
+
+        def worker():
+            ok, ports, found = self.backend_ok, self.fixture_port_list, self.detected
+            try:
+                ok = device_watch.backend_ok()
+                ports = fpga.fixture_ports()
+                found = device_watch.scan_devices(self.profiles) if ok else []
+            except Exception as e:                          # noqa: BLE001
+                self.log.emit(f"[poll] {e}")
+            self._scanned.emit(ok, ports, found)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_scan(self, ok: bool, ports: list, found: list):
+        self._scanning = False
+        plugged_in = bool(ports) and not self.fixture_present
+        self.backend_ok = ok
+        self.fixture_port_list = ports
+        self.fixture_present = bool(ports)
+        self.detected = found
         self.devices_changed.emit()
-        if self.backend_ok:
+        if ok:
             self._arm_tick()
+        if plugged_in and env_setup.requirement() == "winusb":
+            self.refresh_env_status()     # the binding is per device: read it again
+        if self._scan_again:
+            self._scan_again = False
+            self.refresh_devices()
+
+    def refresh_env_status(self):
+        """Read env_status on a worker thread: at start-up, when the fixture
+        appears, and after a deploy/remove -- never per poll."""
+        if not env_setup.requirement():
+            return
+
+        def worker():
+            try:
+                st = env_setup.status()
+            except Exception:                               # noqa: BLE001
+                st = "unknown"
+            self.env_status = st
+            self.env_status_changed.emit()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _arm_tick(self):
         if not self.armed or self.busy:
@@ -311,6 +365,11 @@ class StationController(QObject):
                 self.log.emit(f"[env] exception: {e}")
                 ok = False
             self.log.emit(f"env setup {action}: {'OK' if ok else 'FAILED'}")
+            try:
+                self.env_status = env_setup.status()
+            except Exception:                               # noqa: BLE001
+                self.env_status = "unknown"
             self.env_done.emit(ok, action)
+            self.env_status_changed.emit()
 
         threading.Thread(target=worker, daemon=True).start()

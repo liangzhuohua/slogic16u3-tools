@@ -404,6 +404,9 @@ ZH: dict[str, str] = {
         'udev 规则已部署',
     'udev rule missing: deploy it on the Environment Setup page':
         '未部署 udev 规则：到「环境准备」页一键部署',
+    'Fixture driver': '夹具驱动',
+    'not WinUSB: deploy it on the Environment Setup page':
+        '不是 WinUSB：到「环境准备」页一键部署',
     '{n} connected; keep only the board under test':
         '连了 {n} 台，只保留被测板',
     'Reset':

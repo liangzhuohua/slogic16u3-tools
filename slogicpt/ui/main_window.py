@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         ctl.notice.connect(lambda text: self._show_result("waiting", text=text))
         ctl.board_removed.connect(lambda: self._set_caption("next"))
         ctl.env_done.connect(self._on_env_done)
+        ctl.env_status_changed.connect(self._on_env_status)
 
         self.setWindowTitle(t("SLogic Production Test"))
         self.setWindowIcon(icons.icon("usb", "primary", 64))
@@ -601,12 +602,18 @@ class MainWindow(QMainWindow):
             rows.append(("bad", "sigrok-cli", t("not found; see resources/README.md")))
         else:
             rows.append(("ok", "sigrok-cli", ctl.sigrok_version or "…"))
-        if env_setup.requirement():
-            st = env_setup.status()
+        st = ctl.env_status
+        if env_setup.requirement() == "udev":
             rows.append(("ok", t("Device permissions"), t("udev rule deployed"))
                         if st == "deployed" else
                         ("bad", t("Device permissions"),
                          t("udev rule missing: deploy it on the Environment Setup page")))
+        elif env_setup.requirement() == "winusb" and st != "unknown":
+            # unknown = fixture absent or not read yet; its own row covers that
+            rows.append(("ok", t("Fixture driver"), "WinUSB")
+                        if st == "deployed" else
+                        ("bad", t("Fixture driver"),
+                         t("not WinUSB: deploy it on the Environment Setup page")))
         return rows
 
     def _render_stats(self):
@@ -930,12 +937,17 @@ class MainWindow(QMainWindow):
         if ok:
             self.ctl.refresh_devices()    # permissions/driver may now differ
 
+    def _on_env_status(self):
+        self._refresh_env_buttons()
+        if self._result[0] in ("idle", "ready"):
+            self._render_result()
+
     def _refresh_env_buttons(self):
         """Linux: the rule file is directly checkable; Windows: the WinUSB
         binding isn't cheaply queryable, so both buttons stay enabled."""
         if self.env_deploy_btn is None:
             return
-        st = env_setup.status()
+        st = self.ctl.env_status
         self.env_deploy_btn.setEnabled(True)
         self.env_remove_btn.setEnabled(True)
         if st == "deployed":
