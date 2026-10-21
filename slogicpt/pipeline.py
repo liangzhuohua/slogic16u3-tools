@@ -42,6 +42,11 @@ class PipelineCallbacks:
     on_user_prompt_clear: Callable[[], None] = lambda: None
     # one-line reason a step failed, sent just before its FAILED status
     on_step_note: Callable[[str, str], None] = lambda name, note: None
+    # what is happening right now ("M4 32ch@200M @0.9V", "seen: 10G") -- display
+    on_progress: Callable[[str], None] = lambda text: None
+    # one pattern mode finished: (link name or "", mode, ok, short reason)
+    on_mode_result: Callable[[str, int, bool, str], None] = \
+        lambda link, mode, ok, note: None
     on_finished: Callable[[bool, str], None] = lambda ok, report: None
 
 
@@ -453,6 +458,8 @@ class Pipeline:
                 seen = ", ".join(str(d) for d in devs) or "none"
                 if seen != last:
                     self._log(t("Waiting for {link}: seen {devs}").format(link=want, devs=seen))
+                    self.cb.on_progress(t("Now detected: {devs}").format(
+                        devs=", ".join(d.link for d in mine) or t("no board")))
                     last = seen
                 if len(apps) == 1 and mine and (mine[0].speed or
                                                 self._sigrok_link_speed()) == link:
@@ -628,9 +635,12 @@ class Pipeline:
         for entry in self.profile.plan:
             if self.cancel.is_set():
                 break
-            before = len(self.report_lines)
+            before, f0 = len(self.report_lines), len(self.failures)
+            self.cb.on_progress("M%d %s" % (entry.mode, entry.label))
             ok = self._run_mode(entry)
             all_ok = all_ok and ok
+            self.cb.on_mode_result(_link_name(link) if link else "", entry.mode, ok,
+                                   "" if ok else self._step_note(before, f0))
             # Keep the per-mode PASS/FAIL line, drop the per-config noise
             # that _run_mode_config already put in the log.
             if len(self.report_lines) == before:
@@ -728,6 +738,8 @@ class Pipeline:
         verdicts_by_channel: dict[int, object] = {}
         extra: dict[str, object] = {}
         for vth, group in passes:
+            self.cb.on_progress("M%d %s · %s @%.1fV" % (entry.mode, entry.label,
+                                                        label, vth))
             ok, verdicts = self._capture_and_check(
                 entry, cfg, vth, str(n_samples), eff_window_s,
                 checks, patterns, waveform)

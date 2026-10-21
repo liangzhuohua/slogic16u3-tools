@@ -31,6 +31,8 @@ class StationController(QObject):
     log = pyqtSignal(str)
     step = pyqtSignal(str, object)               # step id, StepStatus
     step_note = pyqtSignal(str, str)             # step id, why it failed
+    progress = pyqtSignal(str)                   # what the run is doing now
+    mode_result = pyqtSignal(str, int, bool, str)  # link, mode, ok, reason
     prompt = pyqtSignal(str)
     prompt_clear = pyqtSignal()
     run_started = pyqtSignal(bool)              # True = whole-board run
@@ -50,6 +52,10 @@ class StationController(QObject):
         self.detected: list[device_watch.DeviceStatus] = []
         self.backend_ok = True
         self.fixture_present = False
+        self.fixture_port_list: list[str] = []
+        self.sigrok_version = ""                 # filled in by a background probe
+        if sigrok is not None:
+            threading.Thread(target=self._probe_sigrok, daemon=True).start()
         self.profile: ProductProfile | None = None   # last recognised board
         self.armed = False
         self.arm_state = "idle"
@@ -59,6 +65,14 @@ class StationController(QObject):
         self._device_timer = QTimer(self)
         self._device_timer.timeout.connect(self.refresh_devices)
         self._device_timer.start(1500)
+
+    def _probe_sigrok(self):
+        """sigrok-cli's own version line, for the readiness checklist."""
+        try:
+            out = self.sigrok._run_lines(["--version"], 20)
+        except Exception:                                   # noqa: BLE001
+            out = []
+        self.sigrok_version = next((ln.strip() for ln in out if ln.strip()), "?")
 
     # ------------------------------------------------------------- queries
 
@@ -135,7 +149,8 @@ class StationController(QObject):
         """Poll the USB analyzers.  This also drives the armed state machine
         (a new board starts a run, its removal re-arms)."""
         self.backend_ok = device_watch.backend_ok()
-        self.fixture_present = fpga.fixture_present()
+        self.fixture_port_list = fpga.fixture_ports()
+        self.fixture_present = bool(self.fixture_port_list)
         self.detected = device_watch.scan_devices(self.profiles) if self.backend_ok else []
         self.devices_changed.emit()
         if self.backend_ok:
@@ -165,6 +180,9 @@ class StationController(QObject):
             on_log=self.log.emit,
             on_step=lambda sid, st: self.step.emit(sid, st),
             on_step_note=lambda sid, note: self.step_note.emit(sid, note),
+            on_progress=self.progress.emit,
+            on_mode_result=lambda link, mode, ok, note: self.mode_result.emit(
+                link, mode, ok, note),
             on_user_prompt=self.prompt.emit,
             on_user_prompt_clear=self.prompt_clear.emit,
             on_finished=lambda ok, rep: self._pl_finished.emit(ok, rep))

@@ -44,7 +44,6 @@ ZH: dict[str, str] = {
     "Deploy": "部署",
     "Remove": "移除",
     # banner
-    "Standby": "待机",
     # problem chip / dialog
     "{n} errors": "{n} 错误",
     "{n} warnings": "{n} 警告",
@@ -85,7 +84,6 @@ ZH: dict[str, str] = {
     # language switch guard
     "Cannot switch language while a test is running.": "测试运行中无法切换语言。",
     # slots
-    "Current step: {label}": "当前步骤: {label}",
     # report
     "SLogic Production Test Report": "SLogic 产测报告",
     "Time: {ts}": "时间: {ts}",
@@ -331,4 +329,43 @@ ZH: dict[str, str] = {
         '重试后通过：{items}',
     ' (retried {n}x)':
         '（重试 {n} 次）',
+    # ---- result panel (v0.4.3) --------------------------------------------
+    'Analyzer':
+        '分析仪',
+    'Armed: every board connected is tested automatically':
+        '已布防：接入的每块板都会自动开测',
+    'Bench readiness':
+        '台架就绪检查',
+    'Boards tested since the program started (not saved)':
+        '本次启动以来测过的板子（不存档）',
+    'Device permissions':
+        '设备权限',
+    'Fixture':
+        '夹具',
+    'Link':
+        '链路',
+    'Now detected: {devs}':
+        '当前检测到：{devs}',
+    'Step {k}/{n}: {what}':
+        '第 {k}/{n} 步：{what}',
+    'This session: {n} tested · {p} pass · {f} fail':
+        '本次：已测 {n} · 通过 {p} · 失败 {f}',
+    'USB link check':
+        'USB 链路检查',
+    'libusb backend not found':
+        '未找到 libusb 后端',
+    'no board':
+        '无被测板',
+    'not connected':
+        '未连接',
+    'not connected (Tang Nano 9K)':
+        '未连接（Tang Nano 9K）',
+    'not found; see resources/README.md':
+        '未找到，见 resources/README.md',
+    'udev rule deployed':
+        'udev 规则已部署',
+    'udev rule missing: deploy it on the Environment Setup page':
+        '未部署 udev 规则：到「环境准备」页一键部署',
+    '{n} connected; keep only the board under test':
+        '连了 {n} 台，只保留被测板',
 }

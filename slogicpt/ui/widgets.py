@@ -351,9 +351,13 @@ class Stepper(QWidget):
 # --------------------------------------------------------------- result card
 
 class ResultCard(QFrame):
-    """The big verdict in the middle of the window.
+    """The panel in the middle of the window.
 
-    kind: idle / running / waiting / pass / fail.  Waiting breathes its
+    kind: idle / ready / running / waiting / pass / fail.  A header (icon,
+    title, subtitle) sits on top of a body the window fills per state --
+    readiness checklist, progress, the mode matrix -- then detail and caption.
+    PASS / FAIL paint the header as a solid band, so the verdict reads from
+    across the bench while the body stays legible; waiting breathes its
     outline (the operator must act); running shows an indeterminate bar."""
 
     _STYLE = {   # kind -> (background, foreground, icon)
@@ -368,30 +372,41 @@ class ResultCard(QFrame):
     def __init__(self):
         super().__init__()
         self.kind = "idle"
-        self._has_icon = False
         self._phase = 0.0
         self._anim = QTimer(self)
         self._anim.setInterval(33)
         self._anim.timeout.connect(self._tick)
-        self.setMinimumHeight(160)
+        self.setMinimumHeight(200)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(32, 20, 32, 24)
-        lay.setSpacing(6)
-        lay.addStretch(1)
+        lay.setContentsMargins(28, 18, 28, 20)
+        lay.setSpacing(10)
+        self.header = QWidget()
+        hv = QVBoxLayout(self.header)
+        hv.setContentsMargins(0, 0, 0, 0)
+        hv.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addStretch(1)
         self.icon = QLabel()
-        self.icon.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.icon)
+        row.addWidget(self.icon)
         self.title = QLabel()
-        self.title.setAlignment(Qt.AlignCenter)
         self.title.setWordWrap(True)
-        lay.addWidget(self.title)
+        row.addWidget(self.title)
+        row.addStretch(1)
+        hv.addLayout(row)
         self.subtitle = QLabel()
         self.subtitle.setAlignment(Qt.AlignCenter)
         self.subtitle.setWordWrap(True)
-        lay.addWidget(self.subtitle)
+        hv.addWidget(self.subtitle)
+        lay.addWidget(self.header)
+        lay.addSpacing(14)                   # clear of the PASS / FAIL band
+        self.body = QVBoxLayout()
+        self.body.setSpacing(10)
+        lay.addLayout(self.body)
         self.detail = QLabel()
         self.detail.setAlignment(Qt.AlignCenter)
         self.detail.setWordWrap(True)
+        self.detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(self.detail)
         lay.addStretch(1)
         self.caption = QLabel()
@@ -400,29 +415,35 @@ class ResultCard(QFrame):
         lay.addWidget(self.caption)
         self.set_state("idle", "")
 
+    def add_body(self, w: QWidget) -> None:
+        self.body.addWidget(w)
+
     def set_state(self, kind: str, title: str, subtitle: str = "", detail: str = "",
                   caption: str = "", icon: str | None = None):
         self.kind = kind
         bg, fg, ic = self._STYLE[kind]
         ic = icon or ic
         big = kind in ("pass", "fail")
-        self._has_icon = ic is not None
-        self._fit_icon()
+        self.icon.setVisible(ic is not None)
         if ic:
-            self.icon.setPixmap(icons.pixmap(ic, fg, 64 if big else 44))
+            self.icon.setPixmap(icons.pixmap(ic, fg, 44 if big else 32))
         tf = QFont(self.font())
-        tf.setPixelSize(52 if big else 26)
+        tf.setPixelSize(44 if big else 24)
         tf.setBold(True)
         tf.setLetterSpacing(QFont.PercentageSpacing, 104 if big else 100)
         self.title.setFont(tf)
         sf = QFont(self.font())
-        sf.setPixelSize(18 if big else 16)
+        sf.setPixelSize(16)
         self.subtitle.setFont(sf)
-        for w, txt in ((self.title, title), (self.subtitle, subtitle),
-                       (self.detail, detail), (self.caption, caption)):
+        # on PASS / FAIL only the header band is coloured; the body below it
+        # uses the normal text colours
+        body_fg = "on_surface" if big else fg
+        for w, txt, tok in ((self.title, title, fg), (self.subtitle, subtitle, fg),
+                            (self.detail, detail, body_fg),
+                            (self.caption, caption, body_fg)):
             w.setText(txt)
             w.setVisible(bool(txt))
-            w.setStyleSheet(f"color:{theme.color(fg)};")
+            w.setStyleSheet(f"color:{theme.color(tok)};")
         cf = QFont(self.font())
         cf.setPixelSize(15)
         cf.setBold(True)
@@ -432,14 +453,6 @@ class ResultCard(QFrame):
         else:
             self._anim.stop()
         self.update()
-
-    def _fit_icon(self):
-        # on a short window the text matters more than the picture
-        self.icon.setVisible(self._has_icon and self.height() >= 300)
-
-    def resizeEvent(self, e):
-        self._fit_icon()
-        super().resizeEvent(e)
 
     def _tick(self):
         self._phase = (self._phase + 0.033) % 2.0
@@ -452,7 +465,18 @@ class ResultCard(QFrame):
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         path = QPainterPath()
         path.addRoundedRect(r, 16, 16)
-        p.fillPath(path, theme.qcolor(bg))
+        if self.kind in ("pass", "fail"):
+            p.fillPath(path, theme.qcolor("surface_low"))
+            band = QRectF(r.left(), r.top(), r.width(),
+                          self.header.geometry().bottom() + 14 - r.top())
+            p.save()
+            p.setClipPath(path)
+            p.fillRect(band, theme.qcolor(bg))
+            p.restore()
+            p.setPen(QPen(theme.qcolor(bg), 2))
+            p.drawPath(path)
+        else:
+            p.fillPath(path, theme.qcolor(bg))
         if self.kind == "waiting":
             a = 0.35 + 0.65 * (0.5 - 0.5 * math.cos(self._phase * math.pi))
             p.setPen(QPen(theme.qcolor("warning", a), 3))
@@ -471,6 +495,141 @@ class ResultCard(QFrame):
             p.fillRect(QRectF(x, track.top(), seg, h), theme.qcolor("primary"))
         p.end()
         super().paintEvent(e)
+
+
+class _Cell(QWidget):
+    """One matrix cell: pending / running / pass / fail."""
+
+    def __init__(self):
+        super().__init__()
+        self.state = "pending"
+        self.angle = 0.0
+        self.setFixedSize(30, 30)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(3, 3, 24, 24)
+        if self.state in ("pass", "fail"):
+            tok = "success" if self.state == "pass" else "error"
+            p.setPen(Qt.NoPen)
+            p.setBrush(theme.qcolor(tok))
+            p.drawEllipse(r)
+            icons.paint(p, "check" if self.state == "pass" else "close",
+                        "on_" + tok, r.adjusted(5, 5, -5, -5))
+        elif self.state == "running":
+            p.setPen(Qt.NoPen)
+            p.setBrush(theme.qcolor("primary_container"))
+            p.drawEllipse(r)
+            pen = QPen(theme.qcolor("primary"), 2.5)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(r.adjusted(2, 2, -2, -2), int(-self.angle * 16), 100 * 16)
+        else:
+            p.setPen(QPen(theme.qcolor("outline_variant"), 1.5))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(r.adjusted(4, 4, -4, -4))
+
+
+class ModeMatrix(QWidget):
+    """Link passes x (link check + pattern modes), filled in as they finish.
+    Hovering a failed cell shows why it failed."""
+
+    def __init__(self):
+        super().__init__()
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(10)
+        self._grid.setVerticalSpacing(6)
+        self.cells: dict[tuple[str, str], _Cell] = {}
+        self._spin = QTimer(self)
+        self._spin.setInterval(16)
+        self._spin.timeout.connect(self._tick)
+
+    def set_layout(self, rows: list[str], cols: list[tuple[str, str, str]]):
+        """rows: link names ("" for a product without link passes);
+        cols: (key, header, tooltip)."""
+        while self._grid.count():
+            w = self._grid.takeAt(0).widget()
+            if w is not None:
+                w.hide()                 # deleteLater only acts later
+                w.deleteLater()
+        self.cells.clear()
+        for c in range(self._grid.columnCount()):     # forget the old layout
+            self._grid.setColumnStretch(c, 0)
+        self._grid.setColumnStretch(0, 1)
+        for c, (key, head, tip) in enumerate(cols, start=1):
+            h = label(head, "caption")
+            h.setAlignment(Qt.AlignCenter)
+            h.setToolTip(tip)
+            self._grid.addWidget(h, 0, c, Qt.AlignCenter)
+        self._grid.setColumnStretch(len(cols) + 1, 1)
+        for r, row in enumerate(rows, start=1):
+            rl = label(row, "secondary")
+            rl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self._grid.addWidget(rl, r, 0)
+            for c, (key, _h, _t) in enumerate(cols, start=1):
+                cell = _Cell()
+                self._grid.addWidget(cell, r, c, Qt.AlignCenter)
+                self.cells[(row, key)] = cell
+
+    def set_cell(self, row: str, key: str, state: str, tip: str = ""):
+        cell = self.cells.get((row, key))
+        if cell is None:
+            return
+        cell.state = state
+        cell.setToolTip(tip)
+        cell.update()
+        running = any(x.state == "running" for x in self.cells.values())
+        if running and not self._spin.isActive():
+            self._spin.start()
+        elif not running:
+            self._spin.stop()
+
+    def _tick(self):
+        for cell in self.cells.values():
+            if cell.state == "running":
+                cell.angle = (cell.angle + 6) % 360
+                cell.update()
+
+
+class Checklist(QWidget):
+    """Readiness rows: an ok / bad / info icon, a name and a detail."""
+
+    _ICON = {"ok": ("check_circle", "success"), "bad": ("error", "error"),
+             "info": ("info", "on_surface_variant")}
+
+    def __init__(self):
+        super().__init__()
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(10)
+        self._grid.setVerticalSpacing(6)
+        self._grid.setColumnStretch(0, 1)
+        self._grid.setColumnStretch(4, 1)
+        self._last = None
+
+    def set_items(self, items: list[tuple[str, str, str]]):
+        if items == self._last:
+            return
+        self._last = list(items)
+        while self._grid.count():
+            w = self._grid.takeAt(0).widget()
+            if w is not None:
+                w.hide()                 # deleteLater only acts later
+                w.deleteLater()
+        for r, (state, name, detail) in enumerate(items):
+            ic, tok = self._ICON[state]
+            i = QLabel()
+            i.setPixmap(icons.pixmap(ic, tok, 20))
+            self._grid.addWidget(i, r, 1)
+            n = label(name)
+            f = n.font()
+            f.setBold(True)
+            n.setFont(f)
+            self._grid.addWidget(n, r, 2)
+            d = label(detail, "secondary")
+            self._grid.addWidget(d, r, 3)
 
 
 # -------------------------------------------------------------------- drawer

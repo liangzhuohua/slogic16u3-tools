@@ -10,6 +10,23 @@ from ..i18n import set_language
 from . import theme
 
 
+def _keep_running_on_errors(win) -> None:
+    """PyQt5 aborts the whole program on an exception raised inside a slot.
+    On a production bench one stray bug must not take the station down, so
+    print it and put it in the run log instead."""
+    import traceback
+
+    def hook(etype, value, tb):
+        text = "".join(traceback.format_exception(etype, value, tb))
+        sys.stderr.write(text)
+        try:
+            win._append_log("[internal error] " + text.rstrip())
+        except Exception:                                   # noqa: BLE001
+            pass
+
+    sys.excepthook = hook
+
+
 def main() -> None:
     # crisp on high-DPI screens; must precede QApplication
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
@@ -28,6 +45,7 @@ def main() -> None:
 
     from .main_window import MainWindow
     win = MainWindow()
+    _keep_running_on_errors(win)
     win.resize(1280, 800)
     win.show()
     sys.exit(app.exec_())

@@ -15,7 +15,7 @@ from PyQt5.QtCore import QSettings, QSize, Qt, QTimer
 from PyQt5.QtGui import QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
     QAction, QActionGroup, QApplication, QFrame, QHBoxLayout,
-    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QTableWidgetItem,
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -29,8 +29,16 @@ from ..profiles import (
 from ..sigrok import SigrokCli, find_sigrok_binary
 from . import icons, report, theme
 from .station import StationController
-from .widgets import (Chip, Drawer, GripSplitter, ParamDialog, ResultCard, Stepper,
+from .widgets import (Checklist, Chip, Drawer, GripSplitter, ModeMatrix, ParamDialog,
+                      ResultCard, Stepper,
                       button, label)
+
+
+def _clock(seconds: float) -> str:
+    """1:35, or 1:02:03 past an hour."""
+    m, sec = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
 
 
 @dataclass
@@ -64,12 +72,23 @@ class MainWindow(QMainWindow):
         self._retry_label = ""              # set while an operator retry runs
         self._run_detail = ""               # this board's report detail so far
         self._run_elapsed = 0.0
+        self._run_t0 = 0.0                  # for the live clock
+        self._run_kind = ""                 # "full" | "retry" | "manual"
+        self._board_sn = ""
+        self._progress = ""                 # latest "what is happening" line
+        self._modes: dict[tuple[str, str], tuple[str, str]] = {}  # cell -> (state, why)
+        self._session: list[bool] = []      # verdict per board this session (memory only)
         self._params: ParamDialog | None = None
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._render_result)
 
         ctl = self.ctl
         ctl.log.connect(self._append_log)
         ctl.step.connect(self._on_step)
         ctl.step_note.connect(self._on_step_note)
+        ctl.progress.connect(self._on_progress)
+        ctl.mode_result.connect(self._on_mode_result)
         ctl.prompt.connect(self._on_prompt)
         ctl.prompt_clear.connect(self._on_prompt_clear)
         ctl.run_started.connect(self._on_run_started)
@@ -110,6 +129,10 @@ class MainWindow(QMainWindow):
         chips.addWidget(self.product_chip)
         chips.addWidget(self.device_chip)
         chips.addStretch(1)
+        self.stats_chip = Chip("check_circle")
+        self.stats_chip.setToolTip(t("Boards tested since the program started "
+                                     "(not saved)"))
+        chips.addWidget(self.stats_chip)
         body.addLayout(chips)
 
         step_card = QFrame()
@@ -127,6 +150,14 @@ class MainWindow(QMainWindow):
         # verdict card and drawer share the rest; the drawer's height is set by
         # dragging the handle between them and remembered
         self.result_card = ResultCard()
+        self.checklist = Checklist()
+        self.result_card.add_body(self.checklist)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(6)
+        self.result_card.add_body(self.progress_bar)
+        self.matrix = ModeMatrix()
+        self.result_card.add_body(self.matrix)
         self.split = GripSplitter(Qt.Vertical)
         self.split.setChildrenCollapsible(False)
         self.split.setHandleWidth(12)
@@ -146,6 +177,7 @@ class MainWindow(QMainWindow):
         self._params.run_btn.clicked.connect(self._run_capture)
 
         self._render_problem_chip()
+        self._render_stats()
         self._layout_steps(force=True, keep_status=True)
         self._fill_params(self.ctl.profile)
         self._render_result()
@@ -362,6 +394,8 @@ class MainWindow(QMainWindow):
             self._layout_steps()
         self._render_fixture_reqs()
         self._update_enablement()
+        if self._result[0] in ("idle", "ready"):
+            self._render_result()        # the readiness checklist follows the bench
 
     def _on_state(self):
         ctl = self.ctl
@@ -421,6 +455,7 @@ class MainWindow(QMainWindow):
             self._steps.clear()
             self._fixture_need = {}
             self.stepper.show_hint(t("Connect the board under test"))
+            self._layout_matrix(None)
             return
         old = self._steps if keep_status else {}
         plan = sequence_plan(shown)
@@ -440,6 +475,7 @@ class MainWindow(QMainWindow):
         for step_id, s in self._steps.items():
             self.stepper.set_status(step_id, s.status, s.duration)
             self.stepper.set_note(step_id, s.note)
+        self._layout_matrix(shown)
         self._update_enablement()
 
     @staticmethod
@@ -475,10 +511,103 @@ class MainWindow(QMainWindow):
                 s.duration = time.time() - s.t_start
             s.status = status
             self.stepper.set_status(sid, status, s.duration)
+            self._apply_matrix()
         if status == StepStatus.RUNNING:
             self._current_sid = sid
             if not self._prompt:
                 self._show_result("running", sid=sid)
+
+    # ------------------------------------------------------ the mode matrix
+
+    @staticmethod
+    def _row_of(sid: str) -> str:
+        """"signal:all@10G" -> "10G"; no link suffix -> ""."""
+        return sid.split("@", 1)[1] if "@" in sid else ""
+
+    def _layout_matrix(self, profile):
+        """Rows = link passes, columns = link check + every planned mode; hidden
+        for a product without a pattern plan."""
+        if profile is None or not profile.plan:
+            self._matrix_rows = []
+            self.matrix.set_layout([], [])
+            return
+        from ..profiles import link_name
+        self._matrix_rows = [link_name(lk) for lk in profile.links] or [""]
+        cols = [("link", t("Link"), t("USB link check"))] + [
+            ("M%d" % e.mode, "M%d" % e.mode, e.label) for e in profile.plan]
+        self.matrix.set_layout(self._matrix_rows, cols)
+        self._apply_matrix()
+
+    def _apply_matrix(self):
+        state_of = {StepStatus.PASSED: "pass", StepStatus.FAILED: "fail",
+                    StepStatus.RUNNING: "running", StepStatus.WAITING_USER: "running"}
+        for sid, st in self._steps.items():
+            if sid.startswith("link:"):
+                self.matrix.set_cell(self._row_of(sid), "link",
+                                     state_of.get(st.status, "pending"), st.note)
+        for (row, key), (state, why) in self._modes.items():
+            self.matrix.set_cell(row, key, state, why)
+
+    def _on_progress(self, text: str):
+        self._progress = text
+        head = text.split(" ", 1)[0]
+        row = self._row_of(self._current_sid)
+        if head[:1] == "M" and head[1:].isdigit() and (row, head) not in self._modes:
+            # first progress line of a mode: it is running now
+            for k, (state, _w) in list(self._modes.items()):
+                if state == "running" and k[0] == row:
+                    del self._modes[k]
+            self._modes[(row, head)] = ("running", "")
+            self._apply_matrix()
+        if self._result[0] in ("running", "waiting"):
+            self._render_result()
+
+    def _on_mode_result(self, link: str, mode: int, ok: bool, why: str):
+        self._modes[(link, "M%d" % mode)] = ("pass" if ok else "fail", why)
+        self._apply_matrix()
+
+    def _readiness(self) -> list[tuple[str, str, str]]:
+        """(ok | bad | info, name, detail) rows for the idle checklist."""
+        ctl = self.ctl
+        rows = []
+        if not ctl.backend_ok:
+            rows.append(("bad", t("Analyzer"), t("libusb backend not found")))
+        elif not ctl.detected:
+            rows.append(("bad", t("Analyzer"), t("not connected")))
+        else:
+            d = ctl.detected[0]
+            what = " · ".join(x for x in (d.profile.display_name,
+                                         "SN " + d.serial if d.serial else "",
+                                         d.link) if x)
+            if len(ctl.detected) > 1:
+                rows.append(("bad", t("Analyzer"),
+                             t("{n} connected; keep only the board under test")
+                             .format(n=len(ctl.detected))))
+            else:
+                rows.append(("ok" if ctl.test_link_ok() else "bad", t("Analyzer"), what))
+        if any(p.signal_source.is_fpga for p in self.profiles):
+            rows.append(("ok", t("Fixture"), ", ".join(ctl.fixture_port_list))
+                        if ctl.fixture_port_list else
+                        ("bad", t("Fixture"), t("not connected (Tang Nano 9K)")))
+        if ctl.sigrok is None:
+            rows.append(("bad", "sigrok-cli", t("not found; see resources/README.md")))
+        else:
+            rows.append(("ok", "sigrok-cli", ctl.sigrok_version or "…"))
+        if env_setup.requirement():
+            st = env_setup.status()
+            rows.append(("ok", t("Device permissions"), t("udev rule deployed"))
+                        if st == "deployed" else
+                        ("bad", t("Device permissions"),
+                         t("udev rule missing: deploy it on the Environment Setup page")))
+        return rows
+
+    def _render_stats(self):
+        n = len(self._session)
+        p = sum(self._session)
+        self.stats_chip.setVisible(n > 0)
+        self.stats_chip.set_state(
+            t("This session: {n} tested · {p} pass · {f} fail").format(n=n, p=p, f=n - p),
+            "success" if n and p == n else ("warning" if n else "neutral"))
 
     # ---------------------------------------------------------- the result
 
@@ -496,23 +625,46 @@ class MainWindow(QMainWindow):
         p = ctl.profile
         caption = {"remove": t("Remove the board under test"),
                    "next": t("Waiting for the next board…")}.get(self._caption, "")
+        has_matrix = bool(getattr(self, "_matrix_rows", []))
+        show_check = kind in ("idle", "ready")
+        self.checklist.setVisible(show_check)
+        self.progress_bar.setVisible(kind == "running")
+        self.matrix.setVisible(has_matrix and not show_check)
+        if show_check:
+            self.checklist.set_items(self._readiness())
+        board = " · ".join(x for x in (p.display_name if p else "",
+                                       "SN " + self._board_sn if self._board_sn else "")
+                           if x)
         if kind == "idle":
             self.result_card.set_state(
-                "idle", t("Standby"), t("Click Start, then connect the board under "
-                                        "test; it is recognised automatically"))
+                "idle", t("Bench readiness"),
+                t("Click Start, then connect the board under test; it is recognised "
+                  "automatically"))
         elif kind == "ready":
             self.result_card.set_state(
-                "ready", t("Waiting for the board under test…"), icon="usb")
+                "ready", t("Waiting for the board under test…"),
+                t("Armed: every board connected is tested automatically"), icon="usb")
         elif kind == "running":
-            s = self._steps.get(d.get("sid", ""))
+            elapsed = time.time() - self._run_t0 if self._run_t0 else 0.0
+            order = list(self._steps)
+            k = order.index(self._current_sid) + 1 if self._current_sid in order else 0
+            self.progress_bar.setRange(0, max(1, len(order)))
+            self.progress_bar.setValue(max(0, k - 1))
+            s = self._steps.get(self._current_sid)
+            now = " · ".join(x for x in (s.label if s else "", self._progress) if x)
             self.result_card.set_state(
-                "running", t("Running…"), p.display_name if p else "",
-                t("Current step: {label}").format(label=s.label) if s else "")
+                "running", t("Running…") + "  " + _clock(elapsed), board,
+                t("Step {k}/{n}: {what}").format(k=k, n=len(order), what=now)
+                if k else now)
+            if not self._clock.isActive():
+                self._clock.start()
+            return
         elif kind == "waiting":
-            self.result_card.set_state("waiting", d["text"])
+            seen = self._progress if self._progress.startswith(
+                t("Now detected: {devs}").split("{")[0]) else ""
+            self.result_card.set_state("waiting", d["text"], board, seen)
         else:
-            sub = " · ".join(x for x in (p.display_name if p else "",
-                                         f"{d['elapsed']:.1f}s") if x)
+            sub = " · ".join(x for x in (board, _clock(d["elapsed"])) if x)
             failed = [s.label + (f" — {s.note}" if s.note else "")
                       for s in self._steps.values() if s.status == StepStatus.FAILED]
             retried = [s.label for s in self._steps.values() if s.retries]
@@ -524,6 +676,7 @@ class MainWindow(QMainWindow):
                 detail = ""
             self.result_card.set_state(kind, "PASS" if kind == "pass" else "FAIL",
                                        sub, detail, caption)
+        self._clock.stop()
 
     # ============================================================== actions
 
@@ -577,6 +730,12 @@ class MainWindow(QMainWindow):
 
     def _on_run_started(self, full: bool):
         if full:
+            self._run_kind = "full"
+            self._modes.clear()
+            self._progress = ""
+            d = self.ctl.detected
+            self._board_sn = (d[0].serial or "") if d else ""
+            self._run_t0 = time.time()
             self._run_detail, self._run_elapsed = "", 0.0
             self._retry_label = ""
             # a new board: its own steps, all pending; params for its product
@@ -585,7 +744,13 @@ class MainWindow(QMainWindow):
             self._caption = ""
             self._on_devices()
         else:
+            self._run_kind = "retry" if self._retry_label else "manual"
+            self._run_t0 = time.time() - (self._run_elapsed if self._retry_label else 0.0)
             for step in self.ctl.pipeline.steps:
+                if step.id.startswith("signal:"):     # its mode cells start over
+                    row = self._row_of(step.id)
+                    for k in [k for k in self._modes if k[0] == row]:
+                        del self._modes[k]
                 s = self._steps.get(step.id)
                 if s is not None:
                     s.status, s.t_start, s.duration = StepStatus.PENDING, None, None
@@ -618,6 +783,16 @@ class MainWindow(QMainWindow):
             elapsed = self._run_elapsed + elapsed
             self._retry_label = ""
         self._run_detail, self._run_elapsed = detail, elapsed
+        # a mode left "running" by a cancelled run did not finish
+        for k, (state, why) in list(self._modes.items()):
+            if state == "running":
+                self._modes[k] = ("fail", t("Cancelled"))
+        self._apply_matrix()
+        if self._run_kind == "full":
+            self._session.append(ok)
+        elif self._run_kind == "retry" and self._session:
+            self._session[-1] = ok             # the same board, judged again
+        self._render_stats()
         self._show_result("pass" if ok else "fail", elapsed=elapsed)
         steps = [(s.status, f"{i}. {s.label}", s.duration, s.retries)
                  for i, s in enumerate(self._steps.values(), start=1)]

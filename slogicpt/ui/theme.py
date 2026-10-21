@@ -259,6 +259,8 @@ QMenu::item {{ padding: 8px 28px 8px 16px; }}
 QMenu::item:selected {{ background: {mix('surface_container', 'on_surface', 0.08)}; }}
 QMenu::indicator {{ width: 14px; height: 14px; left: 6px; }}
 
+QProgressBar {{ background: {c['primary_container']}; border: none; border-radius: 3px; }}
+QProgressBar::chunk {{ background: {c['primary']}; border-radius: 3px; }}
 QScrollArea {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
