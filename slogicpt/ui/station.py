@@ -255,7 +255,8 @@ class StationController(QObject):
     def reset_hardware(self):
         """Operator Reset: put the bench back in a known state, off the UI
         thread -- any stray sigrok-cli killed (Windows), the fixture reopened
-        and back in M0, then the devices rescanned.  Each outcome goes to the
+        and back in M0 (its bitstream reloaded into SRAM if it does not
+        answer), then the devices rescanned.  Each outcome goes to the
         log; reset_done fires at the end.  Armed or not stays as it was; a
         board still plugged in is not started (the arm state is left waiting
         for its removal).
@@ -276,11 +277,8 @@ class StationController(QObject):
             kill_image("sigrok-cli-windows-x86_64.exe", "sigrok-cli.exe")
             if ss_cfg is not None:
                 try:
-                    src = fpga.SignalSource(
-                        port=None if ss_cfg.serial == "auto" else ss_cfg.serial,
-                        baud=ss_cfg.baud, settle_ms=ss_cfg.settle_ms,
-                        reply_timeout_ms=ss_cfg.reply_timeout_ms)
-                    src.open()                     # alive check, back to M0
+                    from .. import fixture
+                    src = fixture.ensure_running(ss_cfg, self.log.emit)
                     port = src.port
                     src.close()
                     self.log.emit("[reset] " + t("Fixture on {p} answered, back in M0")

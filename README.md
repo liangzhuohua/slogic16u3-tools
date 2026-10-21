@@ -43,7 +43,7 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── patterns.py      #   夹具图案的期望值（唯一权威，由 RTL 推导）
 │   ├── checks.py        #   判定层：逐通道 + 结构化判定（不滤波；判不了即 FAIL）
 │   ├── deep_checks.py   #   内容级检查：SPI/I2C/UART 解码、突发包络
-│   ├── fixture.py       #   夹具（Tang Nano 9K）位流加载（openFPGALoader 载入 SRAM）
+│   ├── fixture.py       #   夹具（Tang Nano 9K）位流载入 SRAM（本次启动首次用到时 / 不应答时）
 │   ├── fpga.py          #   夹具串口：切模式、存活检查
 │   ├── sigrok.py        #   sigrok-cli 采样封装（logic_channels 分组、回卷检测）
 │   └── waveform.py      #   波形拆包（任意通道数）与 PWM 验证

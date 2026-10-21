@@ -91,7 +91,6 @@ class PipelineAbort(Exception):
 # Step-id -> English label. Shared by sequence_plan() and _sequence_defs() so
 # the two step lists never drift; each label is wrapped in t() at use sites.
 STEP_LABELS: dict[str, str] = {
-    "signal:flash": "Fixture · flash signal generator",
     "link:check": "Check USB link",
 }
 
@@ -123,9 +122,8 @@ def _sequence_spec(profile: ProductProfile
                          t("Re-plug into a {link} port").format(link=name),
                          "_await_link", (link,), True))
         if profile.signal_source.is_fpga:
-            # reload the fixture each pass: moving the cable can disturb its SRAM
-            spec.append((f"signal:flash{sfx}", t(STEP_LABELS["signal:flash"]),
-                         "_signal_flash", (), False))
+            # the pattern step brings the fixture up itself (fixture.ensure_running:
+            # SRAM loaded once per session, again only if it stops answering)
             if profile.plan:
                 spec.append((f"signal:all{sfx}",
                              t("Signal generator · all {n} patterns").format(
@@ -582,14 +580,10 @@ class Pipeline:
         """
         if getattr(self, "_signal", None) is not None:
             return self._signal
-        from .fpga import SignalSource
-        ss = self.profile.signal_source
-        src = SignalSource(port=None if ss.serial == "auto" else ss.serial,
-                           baud=ss.baud, settle_ms=ss.settle_ms,
-                           reply_timeout_ms=ss.reply_timeout_ms)
-        src.open()
-        self._signal = src
-        return src
+        from . import fixture
+        self._signal = fixture.ensure_running(self.profile.signal_source, self._log,
+                                              cancel=self.cancel)
+        return self._signal
 
     def _signal_close(self) -> None:
         src = getattr(self, "_signal", None)
@@ -600,46 +594,21 @@ class Pipeline:
                 pass
             self._signal = None
 
-    def _signal_flash(self) -> bool:
-        """Load the fixture bitstream, then prove the fixture is alive.
-
-        Done here rather than as a separate manual step because the FPGA loses its
-        SRAM configuration on any small power disturbance -- re-seating a probe is
-        enough -- and when it does, every pin floats and the analyser reads all
-        channels high. Reflashing at the start of every run makes the fixture state
-        deterministic instead of a source of mystery failures later.
-        """
-        from . import fixture
-        ss = self.profile.signal_source
-        if ss.firmware is None:
-            self._log(t("signal_source.firmware is not declared"))
-            self.report_lines.append("fixture: FAIL (" + t("no firmware declared") + ")")
-            return False
-
-        # 夹具没插就提示并等待，插上后自动继续。
+    def _fixture_ready(self) -> bool:
+        """The fixture is plugged in (else prompt and wait), running testgen
+        and answering on its serial port (loaded into SRAM when needed)."""
         if not self._wait_for_fixture():
-            self.report_lines.append("fixture: FAIL")
+            self.report_lines.append("fixture: FAIL (" + t("not plugged in") + ")")
             return False
-
-        ok = fixture.flash(ss.firmware, ss.firmware_run, self._log,
-                           cancel=self.cancel)
-        if not ok:
-            self._log(t("Fixture flash FAILED"))
-            self.report_lines.append(
-                "fixture: FAIL (" + t("could not load the signal generator") + ")")
-            return False
-        # The FPGA comes up in M0, so the bitstream can be checked immediately.
-        self._signal = None            # force a fresh open; the port may be new
         try:
             self._signal_source()
         except Exception as e:                      # noqa: BLE001
-            self._log(t("Signal generator not reachable after flashing: {e}").format(e=e))
+            self._log(t("Signal generator unavailable: {e}").format(e=e))
             self.report_lines.append(
-                "fixture: FAIL (" + t("no serial port after flashing") + ")")
+                "fixture: FAIL (" + t("no signal generator") + ")")
             return False
         self._log(t("Signal generator on {p}, alive, mode 0").format(
             p=getattr(self._signal, "port", "?")))
-        self.report_lines.append("fixture: PASS")
         return True
 
     def _run_all_modes(self, link: int | None = None) -> bool:
@@ -653,6 +622,8 @@ class Pipeline:
         self._link = link
         if link is not None:
             self.report_lines.append("-- %s --" % _link_name(link))
+        if not self._fixture_ready():
+            return False
         summary_before = len(self.report_lines)
         all_ok = True
         for entry in self.profile.plan:
@@ -967,7 +938,7 @@ if __name__ == "__main__":
         ids = [sid for sid, _ in sequence_plan(prof)]
         print(f"  {prof.id}: {ids}")
         assert ids and ids[0].startswith("link:check"), ids
-        # one fixture reload + pattern run per link pass, later passes start
+        # one pattern run per link pass, later passes start
         # with a re-plug step
         if prof.signal_source.is_fpga and prof.plan:
             assert sum(i.startswith("signal:all") for i in ids) == max(1, len(prof.links)), ids

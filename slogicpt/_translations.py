@@ -128,12 +128,8 @@ ZH: dict[str, str] = {
     "mode not confirmed": "模式未确认",
     "M{mode} is not ready: {note}": "M{mode} 未就绪: {note}",
     "not ready": "未就绪",
-    "no serial port after flashing": "烧录后没有串口",
     "Signal generator on {p}, alive, mode 0": "信号发生器在 {p}，存活，模式 0",
     "Loading fixture: {name} (run {run})": "烧录夹具: {name} (run {run})",
-    "Fixture flash FAILED":
-        "夹具烧录失败",
-    "no firmware declared": "未声明固件",
     "== signal generator: {p} patterns pass, {f} fail ==":
         "== 信号发生器: {p} 个模式通过，{f} 个失败 ==",
     "Capture attempt {a}/{n} failed ({e}); retrying":
@@ -258,8 +254,6 @@ ZH: dict[str, str] = {
         '   {label}: {verdict}  （{p} 通过 / {f} 失败）',
     'could not load the signal generator':
         '信号发生器烧录失败',
-    'Signal generator not reachable after flashing: {e}':
-        '烧录后信号发生器无法连通：{e}',
     'capture failed':
         '采集失败',
     'PASS':
@@ -316,8 +310,6 @@ ZH: dict[str, str] = {
         '{name} 处于 DFU 模式：应用固件尚未烧录',
     'unknown link {name!r} (expected one of {opts})':
         '未知链路 {name!r}（应为 {opts} 之一）',
-    'Fixture · flash signal generator':
-        '夹具 · 烧录信号发生器',
     'Check USB link':
         '检查 USB 链路',
 
@@ -361,9 +353,6 @@ ZH: dict[str, str] = {
         '深色',
     'Armed':
         '已布防',
-    # ---- pre-flashed fixture (v0.4.3) ---------------------------------------
-    'Install a udev rule for SLogic (359F) for root-free access; deploying pops up an authorization dialog, then replug the device to take effect.':
-        '为 SLogic(359F) 安装 udev 规则，免 root 访问；部署会弹出授权框，之后重新插拔设备生效。',
     'not plugged in':
         '未插入',
     'capture retried {n}x: {why}':
@@ -425,4 +414,8 @@ ZH: dict[str, str] = {
         '夹具（{p}）应答正常，已切回 M0',
     'Fixture reset failed: {e}':
         '夹具复位失败：{e}',
+    'Fixture does not answer ({e}); loading its bitstream into SRAM again':
+        '夹具无应答（{e}），重新把位流载入 SRAM',
+    'Loading the fixture bitstream into SRAM (first use in this session)':
+        '本次启动首次使用夹具，把位流载入 SRAM',
 }

@@ -40,7 +40,7 @@ links = ["10G", "5G"]      # 产测逐轮链路：先 10G 全测，提示换插 
 [signal_source]            # 信号源夹具（Tang Nano 9K），32U3 / 16U3 相同
 type     = "fpga"
 firmware = "../../fixture/testgen.fs"   # 相对本产品目录
-firmware_run = 2           # SRAM 载入（每轮重载，约 1.5 s）
+firmware_run = 2           # 载入 SRAM（本次启动首次用到时载入，不应答时重载，约 1.5 s）
 
 [[capture.threshold_groups]]   # 1.8 V 的 bank 3 通道另用 0.9 V 阈值再采一次
 channels = [20, 21, 22, 23, 24, 25]
@@ -78,7 +78,12 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
 | `未找到 sigrok-cli 二进制` | 按平台命名放入 `bin/`（见上文） |
 | `未找到 libusb 后端（libusb-1.0.dll）` | Windows：把 `libusb-1.0.dll` 放进 `bin/`（见跨平台一节），并给设备装 WinUSB 驱动 |
 
-夹具位流 `testgen.fs` 不在启动自检里：缺失时产测的「夹具 · 烧录信号发生器」一步报"找不到夹具位流"。
+夹具位流 `testgen.fs` 不在启动自检里：缺失时图案测试一步报"找不到夹具位流"。
+
+夹具载入时机：本次启动后第一次用到夹具时把 `testgen.fs` 载入夹具 SRAM，之后换板测试不再载入；
+夹具串口不应答（被拔插、掉过电，SRAM 配置已丢）时自动重新载入。点「复位」也会检查夹具，
+不应答同样会重新载入。不写夹具 Flash：openFPGALoader 写 GW1NR-9C 片上 Flash 报
+`CRC check : FAIL`，写后不启动。
 
 ## 跨平台（Linux / Windows）
 

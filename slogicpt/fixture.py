@@ -284,6 +284,48 @@ def _kill_strays() -> None:
                    capture_output=True, timeout=20, **procutil.hidden_kwargs())
 
 
+# testgen has been loaded into the fixture's SRAM by this process.  SRAM is
+# volatile: when the fixture loses power the alive check fails and
+# ensure_running loads it again.
+session_loaded = False
+
+
+def ensure_running(ss, log, cancel=None):
+    """Open the fixture's serial port and return it, alive and in M0.
+
+    testgen is loaded into SRAM on the first use in this process, and again
+    whenever the fixture does not answer -- not before every board: a board
+    swap does not disturb the fixture, and reloading costs ~1.5 s each time.
+    `ss` is the profile's SignalSource.  Raises when it cannot be brought up.
+    """
+    from .fpga import SignalSource
+
+    def load(why: str) -> None:
+        global session_loaded
+        log("[fixture] " + why)
+        if ss.firmware is None:
+            raise RuntimeError(t("signal_source.firmware is not declared"))
+        if not flash(ss.firmware, ss.firmware_run, log, cancel=cancel):
+            raise RuntimeError(t("could not load the signal generator"))
+        session_loaded = True
+
+    def open_alive():
+        src = SignalSource(port=None if ss.serial == "auto" else ss.serial,
+                           baud=ss.baud, settle_ms=ss.settle_ms,
+                           reply_timeout_ms=ss.reply_timeout_ms)
+        src.open()                 # finds the port, checks it answers, M0
+        return src
+
+    if not session_loaded:
+        load(t("Loading the fixture bitstream into SRAM (first use in this session)"))
+    try:
+        return open_alive()
+    except Exception as e:                                  # noqa: BLE001
+        load(t("Fixture does not answer ({e}); loading its bitstream into SRAM "
+               "again").format(e=e))
+        return open_alive()
+
+
 def _selftest() -> int:
     import sys as _sys
     _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
