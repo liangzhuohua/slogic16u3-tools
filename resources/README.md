@@ -8,8 +8,6 @@
 resources/
 ├── products/<product_id>/        # 一产品一目录，目录名 = product_id
 │   └── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 测试计划），公开入库
-├── fixture/
-│   └── testgen.fs                # 信号源夹具（Tang Nano 9K）位流，入库；夹具出厂时烧进其片上 Flash
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
@@ -27,19 +25,9 @@ ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigr
 
 ## 夹具（Tang Nano 9K）
 
-夹具的图案设计 `fixture/testgen.fs` 预先烧在夹具 FPGA 的**片上 Flash** 里，上电即运行，
-产测工具不再烧录夹具，只通过夹具串口切换模式。工位不需要 openFPGALoader 或 Gowin 烧录器。
-
-给新夹具（或更新了 RTL 的夹具）烧录一次，在任意装有 openFPGALoader 的电脑上：
-
-```bash
-openFPGALoader --scan-usb                          # 找含 BL702 的序列号，如 BL702_FTDI_2038131017A8
-openFPGALoader -c ft2232 --ftdi-serial <序列号> -f resources/fixture/testgen.fs
-# 输出末尾应有 "CRC check: Success"；之后拔插夹具，确认上电即进入 M0
-```
-
-更新夹具 RTL 后，把新构建的 `impl/pnr/testgen.fs` 覆盖到 `resources/fixture/` 并提交，
-再按上面的方法烧进各台夹具。
+夹具的图案设计（testgen，M0..M6）预先烧在夹具 FPGA 的**片上 Flash** 里，上电即运行。
+产测工具不烧录夹具，只通过夹具串口切换模式，工位不需要任何烧录工具。夹具的 RTL、位流
+和烧录由夹具项目负责，不在本仓库。
 
 ## product.toml：产品档案
 
@@ -74,7 +62,7 @@ configs = [                # 每轮链路一组配置（5G 下驱动限速：32U
 本仓库是公开仓库，以下内容**仅限工厂产测工位本地放置，禁止提交入库或以任何形式公开**
 （.gitignore 已强制忽略）：
 
-- `products/<id>/firmware/*.fs`、`*.bin` — 产品固件、DFU 位流等（夹具位流 `fixture/testgen.fs` 不在此列，入库）
+- `products/<id>/firmware/*.fs`、`*.bin` — 产品固件、DFU 位流等
 - `products/<id>/firmware/*.ekey`、`efuse_key.txt` — eFuse AES 密钥（机密；本工具已不用，
   .gitignore 仍保留规则以防误提交）
 

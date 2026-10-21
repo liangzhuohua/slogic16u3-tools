@@ -1,6 +1,7 @@
 """Tang Nano 9K 信号发生器控制（产测夹具的信号源）。
 
-夹具里的 Tang Nano 9K 跑 `testgen` 设计，产生 10 种测试图案（M0..M9）。
+夹具里的 Tang Nano 9K 跑 `testgen` 设计（烧在其片上 Flash，上电即运行），
+产生 7 种测试图案（M0..M6）。
 本模块负责找到它的串口、切换模式、并确认切换成功。
 
 协议（见 FPGA 侧 `rtl/cmd_rx.v`）

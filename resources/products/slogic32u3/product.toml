@@ -32,8 +32,8 @@ links = ["10G", "5G"]
 # 时按这对 ID 自动找口（Linux 上 BL702 露出两个 ttyUSB，取接口 1 的 UART）；
 # 夹具没插时提示插上并等待；插上后串口不应答，图案测试一步判 FAIL。
 #
-# 夹具的图案设计（resources/fixture/testgen.fs）事先烧在夹具的片上 Flash 里，
-# 上电即运行，工具不再烧录夹具。给新夹具烧录一次见 resources/README.md。
+# 夹具的图案设计（testgen）事先烧在夹具的片上 Flash 里，上电即运行，
+# 工具不烧录夹具，只切换模式。
 [signal_source]
 type             = "fpga"
 serial           = "auto"
