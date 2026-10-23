@@ -107,6 +107,11 @@ def _sequence_spec(profile: ProductProfile
     # link is a gate that aborts the run (a board that cannot reach 10G is a
     # FAIL without testing); each later pass asks the operator to move the
     # cable to that port and waits for the board to come back at that speed.
+    if profile.reconfig:
+        # first of all: the board must leave for DFU and come back to APP on
+        # its own (USB RECONFIG) -- no pattern is tested on a board that cannot
+        spec.append(("mode:dfu-app", t("Switch to DFU and back to APP"),
+                     "_mode_round_trip", (), True))
     links = profile.links or (None,)
     for n, link in enumerate(links):
         name = _link_name(link)
@@ -416,6 +421,80 @@ class Pipeline:
             return False
         finally:
             self.cb.on_user_prompt_clear()
+
+    def _mode_round_trip(self) -> bool:
+        """APP -> DFU -> APP by USB RECONFIG.  Exactly one SLogic must be online,
+        this product in APP mode; after each request it must re-enumerate in
+        the other mode within [timeouts] mode_switch_s, again as the only SLogic
+        on the host, and come back to APP with the same USB serial -- which is
+        the app firmware's version id (two boards measured with one value), so
+        this proves the same firmware came back, not the same board.
+
+        Not "on the same port": DFU runs at USB 2, which the host puts on
+        another bus with other port numbers than the 10G link (measured: APP
+        on bus 2 port 3, DFU on bus 1 port 3), and DFU reports no serial.  The
+        link speed is the next step's business."""
+        p = self.profile
+        DFU, APP = device_watch.Mode.DFU, device_watch.Mode.APP
+        tmo = p.timeouts.mode_switch_s
+        self._log(f"[criteria] mode switch: only SLogic online = 1 {p.display_name} "
+                  f"in APP; RECONFIG -> it alone in DFU ({p.dfu_pid:#06x}) within "
+                  f"{tmo:.0f}s; RECONFIG -> it alone in APP ({p.app_pid:#06x}) within "
+                  f"{tmo:.0f}s, same USB serial (firmware id) as before")
+
+        def fail(why: str) -> bool:
+            self._log(why)
+            self.report_lines.append(t("DFU/APP switch") + ": FAIL (" + why + ")")
+            return False
+
+        def alone(mode):
+            """The one SLogic on the host, if it is this product in `mode`."""
+            devs = device_watch.scan_devices(self._all_profiles or [p])
+            if len(devs) == 1 and devs[0].profile.id == p.id and devs[0].mode is mode:
+                return devs[0]
+            return None
+
+        devs = device_watch.scan_devices(self._all_profiles or [p])
+        if len(devs) > 1:
+            return fail(t("{n} analyzers online; keep only the board under test "
+                          "connected").format(n=len(devs)))
+        board = alone(APP)
+        if board is None:
+            return fail(t("No {name} running its app firmware was found").format(
+                name=p.display_name))
+        serial = board.serial
+        legs = []
+        for frm, to in ((APP, DFU), (DFU, APP)):
+            self.cb.on_progress(t("Switching {a} -> {b}").format(a=frm.value, b=to.value))
+            t0 = time.time()
+            why = device_watch.reconfig(board)
+            if why:
+                return fail(t("RECONFIG to the {mode} device failed: {e}").format(
+                    mode=frm.value, e=why))
+            self._log(t("RECONFIG sent ({a} -> {b}), waiting for the {b} device…")
+                      .format(a=frm.value, b=to.value))
+            board = None
+            while time.time() - t0 < tmo:
+                if self.cancel.is_set():
+                    return False
+                board = alone(to)
+                if board is not None:
+                    break
+                time.sleep(0.3)
+            if board is None:
+                seen = ", ".join(str(d) for d in device_watch.scan_devices(
+                    self._all_profiles or [p])) or t("nothing")
+                return fail(t("not back in {mode} mode within {s}s after RECONFIG "
+                              "(seen: {seen})").format(mode=to.value, s=f"{tmo:.0f}",
+                                                       seen=seen))
+            legs.append(f"{frm.value}->{to.value} {time.time() - t0:.1f}s")
+            self._log(t("{mode} device back: {dev}").format(mode=to.value, dev=board))
+        if serial and board.serial != serial:
+            return fail(t("APP came back with another serial (firmware id) {a}, was {b}").format(
+                a=board.serial, b=serial))
+        self.app_serial = board.serial
+        self.report_lines.append(t("DFU/APP switch") + ": PASS (" + ", ".join(legs) + ")")
+        return True
 
     def _sigrok_link_speed(self) -> int | None:
         """Link speed from sigrok's scan line ("... - (10G) Sipeed SLogic32 U3"),
@@ -795,7 +874,9 @@ if __name__ == "__main__":
     for prof in all_profiles:
         ids = [sid for sid, _ in sequence_plan(prof)]
         print(f"  {prof.id}: {ids}")
-        assert ids and ids[0].startswith("link:check"), ids
+        # a board that switches modes by RECONFIG starts with the round trip
+        head = ["mode:dfu-app"] if prof.reconfig else []
+        assert ids[:len(head)] == head and ids[len(head)].startswith("link:check"), ids
         # one pattern run per link pass, later passes start
         # with a re-plug step
         assert sum(i.startswith("signal:all") for i in ids) == max(1, len(prof.links)), ids
@@ -823,6 +904,45 @@ if __name__ == "__main__":
     assert link_case([app(5), app(5)]) is False             # two analyzers -> FAIL
     assert link_case([DeviceStatus(p32, Mode.DFU, p32.dfu_pid, None, speed=3)]) is False
     assert link_case([]) is False                           # nothing there
+
+    print("== DFU/APP 来回切换（假设备）==")
+    import dataclasses
+    p32r = dataclasses.replace(p32, reconfig=True,
+                               timeouts=dataclasses.replace(p32.timeouts, mode_switch_s=1))
+    real_reconfig = device_watch.reconfig
+
+    def trip_case(state: list, on_reconfig) -> bool:
+        """state[0] = devices online now; on_reconfig(d) changes them."""
+        device_watch.scan_devices = lambda _profiles: list(state[0])
+        device_watch.reconfig = lambda d: (on_reconfig(d), "")[1]
+        try:
+            pl = Pipeline(p32r, None, cb, [])
+            pl._all_profiles = all_profiles
+            return pl._mode_round_trip()
+        finally:
+            device_watch.scan_devices = real_scan
+            device_watch.reconfig = real_reconfig
+
+    at = lambda mode, port: DeviceStatus(
+        p32r, mode, p32r.app_pid if mode is Mode.APP else p32r.dfu_pid, "SN",
+        bus=1, port_numbers=port, speed=5)
+
+    def flip(state, serial="SN"):
+        def go(d):
+            # DFU comes up on another bus/port and without a serial, as measured
+            if d.mode is Mode.APP:
+                state[0] = [dataclasses.replace(at(Mode.DFU, (3,)), bus=2, serial=None)]
+            else:
+                state[0] = [dataclasses.replace(at(Mode.APP, (2,)), serial=serial)]
+        return go
+    st = [[at(Mode.APP, (2,))]]
+    assert trip_case(st, flip(st)) is True                  # APP -> DFU -> APP
+    st = [[at(Mode.APP, (2,))]]
+    assert trip_case(st, lambda d: None) is False           # never leaves APP
+    st = [[at(Mode.APP, (2,))]]
+    assert trip_case(st, flip(st, serial="OTHER")) is False  # other firmware id back
+    st = [[at(Mode.APP, (2,)), at(Mode.APP, (3,))]]
+    assert trip_case(st, flip(st)) is False                 # two boards
 
     print("== 假步骤成功路径 ==")
     p = Pipeline(profile, None, cb, [

@@ -360,6 +360,17 @@ ZH: dict[str, str] = {
     'udev rule missing: deploy it on the Environment Setup page':
         '未部署 udev 规则：到「环境准备」页一键部署',
     'Fixture driver': '夹具驱动',
+    'Switch to DFU and back to APP': '切换到 DFU 再切回 APP',
+    'DFU/APP switch': 'DFU/APP 切换',
+    'Switching {a} -> {b}': '正在切换 {a} -> {b}',
+    'RECONFIG to the {mode} device failed: {e}': '向 {mode} 设备发送 RECONFIG 失败：{e}',
+    'RECONFIG sent ({a} -> {b}), waiting for the {b} device…': '已发送 RECONFIG（{a} -> {b}），等待 {b} 设备…',
+    'not back in {mode} mode within {s}s after RECONFIG (seen: {seen})':
+        '发送 RECONFIG 后 {s} 秒内没有以 {mode} 模式重新出现（当前：{seen}）',
+    'APP came back with another serial (firmware id) {a}, was {b}': '切回 APP 后序列号（固件标识）变了：{a}，原为 {b}',
+    'nothing': '无',
+    '{mode} device back: {dev}': '{mode} 设备已就绪：{dev}',
+    '[usb] reconfig needs dfu_pid': '[usb] reconfig 需要配置 dfu_pid',
     '[[plan]] is empty; there is nothing to test': '[[plan]] 为空，没有可测的内容',
     'openFPGALoader not found; cannot load the fixture': '找不到 openFPGALoader，无法载入夹具',
     'not WinUSB: deploy it on the Environment Setup page':

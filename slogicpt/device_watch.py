@@ -108,6 +108,40 @@ def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
     return found
 
 
+# RECONFIG (the "USB LA" spec's 0x30 device-management extension): a vendor OUT
+# control request that makes the FPGA reconfigure itself, so the board drops
+# off the bus and comes back in the other mode (APP <-> DFU).
+RECONFIG_REQTYPE = 0x40    # Vendor, host-to-device, device recipient
+RECONFIG_BREQUEST = 0x30
+RECONFIG_TRIGGER = 0x0001  # 1 = reconfigure (0 = no-op probe)
+RECONFIG_MAGIC = 0x5253    # 'RS'
+
+
+def reconfig(d: DeviceStatus) -> str:
+    """Send RECONFIG to the board `d` describes (found again by its bus and
+    port, so a second board of the same PID is never hit).  Returns "" when
+    sent, else why not.  The device may leave the bus before the status stage
+    completes, so an error from the transfer itself still counts as sent:
+    whether it worked is judged by the board re-enumerating in the other mode."""
+    try:
+        dev = usb.core.find(idVendor=d.profile.vid, idProduct=d.pid,
+                            backend=libusb_backend(),
+                            custom_match=lambda x: (x.bus == d.bus and tuple(
+                                x.port_numbers or ()) == d.port_numbers))
+    except Exception as e:                                  # noqa: BLE001
+        return str(e)
+    if dev is None:
+        return "device not found"
+    try:
+        dev.ctrl_transfer(RECONFIG_REQTYPE, RECONFIG_BREQUEST,
+                          RECONFIG_TRIGGER, RECONFIG_MAGIC, None)
+    except usb.core.USBError:
+        pass                      # gone mid-transfer: expected
+    finally:
+        usb.util.dispose_resources(dev)
+    return ""
+
+
 if __name__ == "__main__":
     from .profiles import load_profiles
     profiles, _ = load_profiles()

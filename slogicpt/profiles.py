@@ -150,6 +150,7 @@ class PlanEntry:
 @dataclass(frozen=True)
 class Timeouts:
     capture_s: float = 120
+    mode_switch_s: float = 30            # each leg of the DFU/APP round trip
 
 
 @dataclass
@@ -184,6 +185,9 @@ class ProductProfile:
     # (10G, 5G)：先在 10G 下全测通过，再换插 5G 口重测，保证用户两种链路都可用。
     # 第一轮是门槛（达不到直接 FAIL）；空 -> 不设门槛、只测一轮。
     links: tuple[int, ...] = ()
+    # the board switches APP <-> DFU on a USB RECONFIG request ([usb] reconfig);
+    # the test then starts with a round trip through DFU
+    reconfig: bool = False
 
     @property
     def min_link(self) -> int | None:
@@ -341,6 +345,7 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         tmo = doc.get("timeouts", {})
         timeouts = Timeouts(
             capture_s=float(tmo.get("capture_s", 120)),
+            mode_switch_s=float(tmo.get("mode_switch_s", 30)),
         )
 
         default_vth = float(capture.get("voltage_threshold_v", 1.6))
@@ -357,6 +362,7 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
             vid=int(usb["vid"]),
             app_pid=int(usb["app_pid"]),
             links=_parse_links(usb),
+            reconfig=bool(usb.get("reconfig", False)),
             dfu_pid=int(dfu_pid) if dfu_pid is not None else None,
             driver=str(capture["driver"]),
             num_channels=num_channels,
@@ -369,6 +375,9 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
             product_dir=product_dir,
             timeouts=timeouts,
         )
+        if profile.reconfig and profile.dfu_pid is None:
+            problems.append(Problem("error", prod_id,
+                                    t("[usb] reconfig needs dfu_pid")))
         # every link pass needs a config for every ready mode, or that pass would
         # silently test less than the others
         for link in profile.links:
