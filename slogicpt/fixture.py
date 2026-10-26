@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import procutil
-from .fpga import is_fixture_serial
+from .fpga import FixtureUsb, is_fixture_serial
 from .i18n import t
 
 
@@ -59,8 +59,8 @@ def _openfpga_exe() -> Path | None:
     return Path(found) if found else None
 
 
-def _ftdi_rows(exe: Path) -> list[FtdiDevice] | None:
-    """`openFPGALoader --scan-usb` 里所有 0403:6010 行；None = 运行失败。"""
+def _ftdi_rows(exe: Path, usb: FixtureUsb) -> list[FtdiDevice] | None:
+    """`openFPGALoader --scan-usb` 里所有匹配夹具 VID:PID 的行；None = 运行失败。"""
     try:
         proc = subprocess.run([str(exe), "--scan-usb"], capture_output=True,
                               timeout=20, **procutil.popen_kwargs())
@@ -71,31 +71,34 @@ def _ftdi_rows(exe: Path) -> list[FtdiDevice] | None:
     # serial 里可能有空格（`FactoryAIOT Pro JTAG Debugger`），不能可靠地按列
     # 切分；这里只取前四列，serial 拿到第一个 token 就够判断是不是夹具，真正
     # 定位设备用 bus:device。
+    pair = rf"0x{usb.vid:04x}:0x{usb.pid:04x}"
     rows = []
     for line in (proc.stdout or "").splitlines():
-        m = re.search(r"^\s*(\d+)\s+(\d+)\s+0x0403:0x6010\s+\S+\s+"
-                      r"(\S+)\s+(\S+)\s+(.+?)\s*$", line)
+        m = re.search(rf"^\s*(\d+)\s+(\d+)\s+{pair}\s+\S+\s+"
+                      rf"(\S+)\s+(\S+)\s+(.+?)\s*$", line, re.IGNORECASE)
         if m:
             rows.append(FtdiDevice(*m.groups()))
     return rows
 
 
-def _fixture_ftdi(log) -> FtdiDevice | None:
+def _fixture_ftdi(log, usb: FixtureUsb) -> FtdiDevice | None:
     """夹具 BL702 在 openFPGALoader 眼里的那一行。"""
     exe = _openfpga_exe()
     if exe is None:
         return None
-    rows = _ftdi_rows(exe)
+    rows = _ftdi_rows(exe, usb)
     if rows is None:
         log(t("openFPGALoader --scan-usb did not run: {p}").format(p=exe))
         return None
     for dev in rows:
         # serial 被空格截断时，整行仍带着完整名字；两处都认。
-        if is_fixture_serial(dev.serial) or is_fixture_serial(str(dev)):
+        if (is_fixture_serial(dev.serial, usb)
+                or is_fixture_serial(str(dev), usb)):
             return dev
-    log(t("Cannot find the fixture: no 0403:6010 device reports a BL702/FactoryAIOT serial"))
+    log(t("Cannot find the fixture: no {vid:#06x}:{pid:#06x} device reports a "
+          "fixture serial").format(vid=usb.vid, pid=usb.pid))
     log("   openFPGALoader --scan-usb: " + ("; ".join(str(r) for r in rows)
-                                           or t("no 0403:6010 device")))
+                                           or t("no matching USB device")))
     if procutil.IS_WINDOWS:
         # the serial port (channel B) answers through the FTDI driver, but
         # openFPGALoader reaches channel A through libusb, which needs WinUSB
@@ -105,7 +108,7 @@ def _fixture_ftdi(log) -> FtdiDevice | None:
 
 
 def flash(bitstream: Path, log_cb=None, *, timeout_s: float = 120,
-          cancel=None) -> bool:
+          cancel=None, usb: FixtureUsb | None = None) -> bool:
     """Load `bitstream` into the fixture's SRAM; True on success.
 
     Output goes to a temporary FILE, never through a pipe (procutil.run_to_file):
@@ -116,6 +119,7 @@ def flash(bitstream: Path, log_cb=None, *, timeout_s: float = 120,
         if log_cb:
             log_cb(msg)
 
+    usb = usb or FixtureUsb()
     if not bitstream.is_file():
         log(t("Fixture bitstream not found: {p}").format(p=bitstream))
         return False
@@ -123,7 +127,7 @@ def flash(bitstream: Path, log_cb=None, *, timeout_s: float = 120,
     if exe is None:
         log(t("openFPGALoader not found; cannot load the fixture"))
         return False
-    dev = _fixture_ftdi(log)
+    dev = _fixture_ftdi(log, usb)
     if dev is None:
         return False
     log(t("Loading fixture with openFPGALoader: {name} (FTDI serial {s})").format(
@@ -167,17 +171,19 @@ def ensure_running(ss, log, cancel=None):
     """
     from .fpga import SignalSource
 
+    usb = ss.usb
+
     def load(why: str) -> None:
         global session_loaded
         log("[fixture] " + why)
-        if not flash(ss.firmware, log, cancel=cancel):
+        if not flash(ss.firmware, log, cancel=cancel, usb=usb):
             raise RuntimeError(t("could not load the signal generator"))
         session_loaded = True
 
     def open_alive():
         src = SignalSource(port=None if ss.serial == "auto" else ss.serial,
                            baud=ss.baud, settle_ms=ss.settle_ms,
-                           reply_timeout_ms=ss.reply_timeout_ms)
+                           reply_timeout_ms=ss.reply_timeout_ms, usb=usb)
         src.open()                 # finds the port, checks it answers, M0
         return src
 
@@ -193,13 +199,18 @@ def ensure_running(ss, log, cancel=None):
 
 def _selftest() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    from .profiles import load_profiles
+    profiles, _ = load_profiles()
+    usb = profiles[0].signal_source.usb if profiles else FixtureUsb()
     exe = _openfpga_exe()
     print("openFPGALoader: %s" % exe)
+    print("fixture USB: %#06x:%#06x  serial_hints=%s"
+          % (usb.vid, usb.pid, ", ".join(usb.serial_hints)))
     if exe is None:
         print("RESULT: no fixture loader found")
         return 1
-    rows = _ftdi_rows(exe)
-    print("0403:6010: %s" % rows)
+    rows = _ftdi_rows(exe, usb)
+    print("%#06x:%#06x: %s" % (usb.vid, usb.pid, rows))
     print("RESULT: OK")
     return 0
 
