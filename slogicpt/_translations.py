@@ -175,8 +175,8 @@ ZH: dict[str, str] = {
         "部署会弹出 UAC 授权框。",
 
     # ---- fixture / signal source / plan (SLogic32U3 handover) ------------
-    'Cannot find the fixture: no 0403:6010 device reports a BL702 serial':
-        '找不到夹具：没有任何 0403:6010 设备的序列号含 BL702',
+    'Cannot find the fixture: no 0403:6010 device reports a BL702/FactoryAIOT serial':
+        '找不到夹具：没有任何 0403:6010 设备的序列号含 BL702/FactoryAIOT',
     'openFPGALoader --scan-usb did not run: {p}': 'openFPGALoader --scan-usb 运行失败：{p}',
     'no 0403:6010 device': '没有 0403:6010 设备',
     "On Windows the fixture's FTDI channel A must use the WinUSB driver: deploy it on the Environment Setup page, then replug the fixture":

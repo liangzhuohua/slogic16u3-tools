@@ -15,8 +15,9 @@
 实测要点（这些都踩过，别重复踩）
 --------------------------------
 * 端口是 **VID:PID = 0x0403:0x6010**（BL702 模拟 FTDI），序列号形如
-  `BL702_FTDI_2038131017A8`。注意 **pyserial 把 vid/pid 报成十进制**
-  （0x0403 显示为 1027），比较时务必同时按十六进制写。
+  `BL702_FTDI_2038131017A8`（旧固件）或 `FactoryAIOT Pro`（新固件）。
+  注意 **pyserial 把 vid/pid 报成十进制**（0x0403 显示为 1027），比较时务必
+  同时按十六进制写。
 * **串口必须常开**。早期版本每次切模式都新起一个 PowerShell 去发字符，
   单次约 1.7 秒；常开后降到约 0.1 秒。40 格的矩阵里这是 60 秒的差别。
 * **模式没变就没有回复**，这是正常行为，不是故障。所以本模块缓存"已确认的
@@ -55,15 +56,18 @@ FPGA_PID = 0x6010
 # 而且它的两个通道会各占一个串口。只要烧录器插着，自动查找就会同时匹配到
 # Tang Nano 和烧录器的 A/B 通道，于是报"找到多个"。
 #
-# 实测三个端口的序列号：
+# 实测端口的序列号：
 #     COM20  2025030317A                  <- 烧录器通道 A（FT2232）
 #     COM21  2025030317B                  <- 烧录器通道 B（FT2232）
-#     COM30  BL702_FTDI_2038131017A8      <- Tang Nano 9K
+#     COM30  BL702_FTDI_2038131017A8      <- Tang Nano 9K（旧 BL702 固件）
+#     COM25  FactoryAIOT Pro              <- Tang Nano 9K（新 BL702 固件）
 #
-# Tang Nano 的 BL702 固件会在序列号里带 `BL702`；普通 FT2232 不带。用它区分。
-# 这不是猜：把一个真的 FT2232 烧成 BL702 的序列号格式是不现实的，而反过来
-# 一个 BL702 也不会把自己报成别的名字。
-FPGA_SERIAL_HINT = "BL702"
+# Tang Nano 的 BL702 固件会在序列号里带 `BL702` 或 `FactoryAIOT`；普通 FT2232
+# 不带。用它区分。注意新版固件的序列号**含空格**，Windows 的设备实例 ID 会把
+# 空格换成下划线并转大写（pyserial 因此报 `FACTORYAIOT_PRO`），而 openFPGALoader
+# 看到的是原始的 `FactoryAIOT Pro`——两处都要按"含 FactoryAIOT"来认。
+FPGA_SERIAL_HINTS = ("BL702", "FACTORYAIOT")
+FPGA_SERIAL_HINT = " / ".join(FPGA_SERIAL_HINTS)   # 只用于提示文案
 
 # 夹具固件 testgen 现在有 7 个模式（M0..M6）。以前是 10 个，自测曾因此
 # 去问 M7..M9，FPGA 正确地拒绝确认，自测却把好硬件报成 FAIL。
@@ -101,9 +105,11 @@ def find_ports() -> list[PortInfo]:
 
 
 def is_fixture_serial(serial: str | None) -> bool:
-    """True for the fixture's BL702 (its serial carries "BL702"); False for the
-    Gowin programmer's FT2232H, which shares VID:PID 0403:6010."""
-    return FPGA_SERIAL_HINT in (serial or "").upper()
+    """True for the fixture's BL702 (its serial carries "BL702" or
+    "FactoryAIOT"); False for the Gowin programmer's FT2232H, which shares
+    VID:PID 0403:6010."""
+    s = (serial or "").upper()
+    return any(hint in s for hint in FPGA_SERIAL_HINTS)
 
 
 def fixture_ports() -> list[str]:
@@ -154,11 +160,12 @@ def find_port(explicit: str | None = None) -> str:
     # plugging it in for a production run makes this look ambiguous even though
     # only one of the ports is the fixture.
     #
-    # The fixture's BL702 puts "BL702" in its serial number; an FT2232 does not.
+    # The fixture's BL702 puts "BL702" or "FactoryAIOT" in its serial number;
+    # an FT2232 does not.
     bl702 = [c for c in cands if is_fixture_serial(c.serial_number)]
     if len(bl702) == 1:
         return bl702[0].device
-    # One BL702 seen twice: on Linux its FT2232 emulation exposes BOTH interfaces
+    # One fixture seen twice: on Linux its FT2232 emulation exposes BOTH interfaces
     # as ttyUSB -- A (interface 0) is JTAG, B (interface 1) is the UART that
     # speaks the mode protocol. Windows usually shows only one COM port.
     if len({c.serial_number for c in bl702}) == 1:

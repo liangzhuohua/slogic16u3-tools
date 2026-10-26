@@ -1,7 +1,10 @@
 """Load the Tang Nano 9K fixture bitstream (testgen.fs) into its FPGA's SRAM.
 
-openFPGALoader does the loading, addressed by the fixture's FTDI serial (its
-BL702 reports "BL702" in it; a Gowin USB programmer, also 0403:6010, does not).
+openFPGALoader does the loading, addressed by the fixture's USB bus/device
+number (its BL702 reports "BL702" or "FactoryAIOT" in its serial; a Gowin USB
+programmer, also 0403:6010, does not).  Bus/device is used instead of the
+serial because the newer BL702 firmware's serial contains a space
+("FactoryAIOT Pro") and openFPGALoader's --scan-usb output cannot delimit it.
 
 SRAM, not flash: writing the GW1NR-9C's embedded flash with openFPGALoader ends
 in "CRC check : FAIL" and the design does not boot.  SRAM is volatile, so the
@@ -13,11 +16,30 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import procutil
 from .fpga import is_fixture_serial
 from .i18n import t
+
+
+@dataclass(frozen=True)
+class FtdiDevice:
+    """One 0403:6010 row from `openFPGALoader --scan-usb`."""
+    bus: str
+    addr: str
+    manufacturer: str
+    serial: str
+    product: str
+
+    @property
+    def busdev(self) -> str:
+        """What `openFPGALoader --busdev-num` expects ("bus:device")."""
+        return f"{self.bus}:{self.addr}"
+
+    def __str__(self) -> str:
+        return f"{self.busdev} {self.manufacturer} {self.serial} {self.product}"
 
 
 def _openfpga_exe() -> Path | None:
@@ -37,9 +59,8 @@ def _openfpga_exe() -> Path | None:
     return Path(found) if found else None
 
 
-def _ftdi_rows(exe: Path) -> list[tuple[str, str, str]] | None:
-    """`openFPGALoader --scan-usb` 里所有 0403:6010 行 -> (manufacturer, serial,
-    product)；None = 运行失败。"""
+def _ftdi_rows(exe: Path) -> list[FtdiDevice] | None:
+    """`openFPGALoader --scan-usb` 里所有 0403:6010 行；None = 运行失败。"""
     try:
         proc = subprocess.run([str(exe), "--scan-usb"], capture_output=True,
                               timeout=20, **procutil.popen_kwargs())
@@ -47,16 +68,20 @@ def _ftdi_rows(exe: Path) -> list[tuple[str, str, str]] | None:
         return None
     # 列格式：Bus device vid:pid probe_type manufacturer serial product
     #  001 008  0x0403:0x6010 FTDI2232 SIPEED 2025030317 USB Debugger
+    # serial 里可能有空格（`FactoryAIOT Pro JTAG Debugger`），不能可靠地按列
+    # 切分；这里只取前四列，serial 拿到第一个 token 就够判断是不是夹具，真正
+    # 定位设备用 bus:device。
     rows = []
     for line in (proc.stdout or "").splitlines():
-        m = re.search(r"0x0403:0x6010\s+\S+\s+(\S+)\s+(\S+)\s+(.+?)\s*$", line)
+        m = re.search(r"^\s*(\d+)\s+(\d+)\s+0x0403:0x6010\s+\S+\s+"
+                      r"(\S+)\s+(\S+)\s+(.+?)\s*$", line)
         if m:
-            rows.append((m.group(1), m.group(2), m.group(3).strip()))
+            rows.append(FtdiDevice(*m.groups()))
     return rows
 
 
-def _fixture_ftdi_serial(log) -> str | None:
-    """夹具 BL702 的 FTDI 序列号，问 openFPGALoader 自己要。"""
+def _fixture_ftdi(log) -> FtdiDevice | None:
+    """夹具 BL702 在 openFPGALoader 眼里的那一行。"""
     exe = _openfpga_exe()
     if exe is None:
         return None
@@ -64,11 +89,12 @@ def _fixture_ftdi_serial(log) -> str | None:
     if rows is None:
         log(t("openFPGALoader --scan-usb did not run: {p}").format(p=exe))
         return None
-    for _, serial, _ in rows:
-        if is_fixture_serial(serial):
-            return serial
-    log(t("Cannot find the fixture: no 0403:6010 device reports a BL702 serial"))
-    log("   openFPGALoader --scan-usb: " + ("; ".join(" ".join(r) for r in rows)
+    for dev in rows:
+        # serial 被空格截断时，整行仍带着完整名字；两处都认。
+        if is_fixture_serial(dev.serial) or is_fixture_serial(str(dev)):
+            return dev
+    log(t("Cannot find the fixture: no 0403:6010 device reports a BL702/FactoryAIOT serial"))
+    log("   openFPGALoader --scan-usb: " + ("; ".join(str(r) for r in rows)
                                            or t("no 0403:6010 device")))
     if procutil.IS_WINDOWS:
         # the serial port (channel B) answers through the FTDI driver, but
@@ -97,13 +123,15 @@ def flash(bitstream: Path, log_cb=None, *, timeout_s: float = 120,
     if exe is None:
         log(t("openFPGALoader not found; cannot load the fixture"))
         return False
-    serial = _fixture_ftdi_serial(log)
-    if serial is None:
+    dev = _fixture_ftdi(log)
+    if dev is None:
         return False
     log(t("Loading fixture with openFPGALoader: {name} (FTDI serial {s})").format(
-        name=bitstream.name, s=serial))
+        name=bitstream.name, s=f"{dev.serial} @ {dev.busdev}"))
+    # 用 bus:device 而不是 --ftdi-serial：新固件的序列号是 "FactoryAIOT Pro"，
+    # 带空格，openFPGALoader --scan-usb 无法给出完整、可回传的字符串。
     rc, out, failure = procutil.run_to_file(
-        [str(exe), "-c", "ft2232", "--ftdi-serial", serial, str(bitstream)],
+        [str(exe), "-c", "ft2232", "--busdev-num", dev.busdev, str(bitstream)],
         timeout_s, cancel)
     if failure == "timeout":
         log(t("openFPGALoader timed out after {s}s").format(s=f"{timeout_s:.0f}"))

@@ -310,7 +310,7 @@ class Pipeline:
 
     @staticmethod
     def _fixture_ports() -> list[str]:
-        """夹具 Tang Nano 的串口（按 BL702 序列号认出，见 fpga.fixture_ports）。"""
+        """夹具 Tang Nano 的串口（按夹具序列号认出，见 fpga.fixture_ports）。"""
         from .fpga import fixture_ports
         return fixture_ports()
 
